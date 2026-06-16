@@ -8,7 +8,7 @@ Installs the Karpathy-style LLM-wiki engine into a Claude Code config:
   - CLAUDE.md   ingestion-policy block               -> <config>/CLAUDE.md  (sentinel-bounded)
 
 Detection-driven: every target is symlink-resolved and operated on at its REAL path, so the
-same script adapts to any layout (personal ~/.claude, a shared claude-global, etc.) with no
+same script adapts to any layout (personal ~/.claude, a shared/team config, etc.) with no
 hardcoded paths. Interactive by default; pass any flag (or --yes) to run non-interactively.
 Nothing is written until you approve the printed plan (or pass --yes); --dry-run never writes.
 """
@@ -228,7 +228,7 @@ def run_wizard(cfg: dict) -> dict:
         print(describe(lbl, probe(base / sub)))
     t = choose("  Install into…", [
         ("personal", f"this config - {base}  (follows your symlinks)"),
-        ("repo", "vendor into a specific repo (e.g. a shared claude-global)"),
+        ("repo", "vendor into a specific repo (e.g. a shared/team config)"),
     ], default=1)
     if t == 2:
         repo = ask("  Repo path", str(base))

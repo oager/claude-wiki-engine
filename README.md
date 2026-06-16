@@ -19,7 +19,7 @@ python3 install.py            # interactive wizard (recommended)
 Non-interactive / automation:
 ```
 python3 install.py --yes                        # accept all defaults
-python3 install.py --into-repo /path/to/repo    # vendor the engine into a shared repo (e.g. claude-global)
+python3 install.py --into-repo /path/to/repo    # vendor the engine into a shared repo (a team/shared config)
 python3 install.py --content-repo <git-url>     # clone a repo to BE your memory dir
 python3 install.py --mode symlink               # link skills to this clone (auto-update); falls back to copy
 python3 install.py --dry-run                     # print the plan, write nothing
