@@ -40,7 +40,10 @@ SKILL_SETS = {"core": ["wiki-ingest", "doc-review", "wiki-sync"]}
 FRAMEWORK_FILES = ["schema.md", "overview.md", "MEMORY.md", "log.md"]
 FRAMEWORK_DIRS = ["sources", "entities", "concepts", "synthesis", "raw", os.path.join("raw", "archive")]
 # (hook file under engine hooks/, the settings.json event it registers under, the tool matcher)
-HOOKS = [("wiki-index-check.cjs", "PostToolUse", "Write|Edit|MultiEdit")]
+HOOKS = [
+    ("wiki-index-check.cjs", "PostToolUse", "Write|Edit|MultiEdit"),
+    ("wiki-sync-nudge.cjs", "Stop", ""),  # once-per-session /wiki-sync nudge (Stop hooks take no matcher)
+]
 SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"
 
@@ -195,7 +198,10 @@ def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
         return  # already registered (idempotent)
     if sp.exists():
         shutil.copy2(sp, str(sp) + ".wikibak")
-    arr.append({"matcher": matcher, "hooks": [{"type": "command", "command": command}]})
+    entry = {"hooks": [{"type": "command", "command": command}]}
+    if matcher:
+        entry = {"matcher": matcher, **entry}   # Stop/SessionStart hooks take no matcher
+    arr.append(entry)
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
 

@@ -36,9 +36,10 @@ python3 install.py --update                       # re-pull engine + re-copy ITS
 ## What it installs
 - `skills/wiki-ingest`, `skills/wiki-sync`, `skills/doc-review` → `<config>/skills/` — **only if absent**
   (an existing skill may come from a plugin like **ECC** or be your own; the installer won't overwrite it).
-- `hooks/wiki-index-check.cjs` → `<config>/hooks/` + a `PostToolUse` entry in `<config>/settings.json`
-  (non-blocking "this page isn't in MEMORY.md" reminder) — `settings.json` is **merged idempotently,
-  backed up, all other keys preserved**.
+- `hooks/wiki-index-check.cjs` (`PostToolUse`, non-blocking "this page isn't in MEMORY.md" reminder)
+  and `hooks/wiki-sync-nudge.cjs` (`Stop`, a once-per-session nudge to run `/wiki-sync` before wrapping
+  up) → `<config>/hooks/` + entries in `<config>/settings.json` — **merged idempotently, backed up,
+  all other keys preserved**.
 - `schema.md`, `overview.md`, `MEMORY.md`, `log.md` + `sources/ entities/ concepts/ synthesis/ raw/ raw/archive/`
   → `<config>/memory/` (seed-if-absent; never overwrites your pages).
 - a reversible ingestion-policy block in `<config>/CLAUDE.md` (between `<!-- wiki-engine:start/end -->` sentinels).
@@ -61,6 +62,7 @@ The installer resolves symlinks and writes to the **real** target, so it fits an
 ## Notes
 - Defaults to **copy** (works everywhere). `--mode symlink` is opt-in and falls back to copy if the OS blocks symlinks.
 - `--update` refreshes engine-owned files only; your content and edits are never touched.
+- The `Stop` nudge fires **once per session** (a tmp flag), is loop-safe, and lets Claude no-op on a routine session; disable with `WIKI_SYNC_NUDGE=off`.
 - The `wiki-index-check` hook keys on a `…/.claude/memory/…` path; if your memory dir is mounted
   elsewhere, writes that go through the `~/.claude/memory` symlink still trigger it.
 - Roadmap: submodule mode; optional extra skills (dictionary / postmortem).
