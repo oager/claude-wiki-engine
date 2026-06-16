@@ -2,20 +2,24 @@
 """claude-wiki-engine installer - universal (Linux / macOS / Windows).
 
 Installs the Karpathy-style LLM-wiki engine into a Claude Code config:
-  - skills      (wiki-ingest, doc-review)            -> <config>/skills/
-  - framework   (schema.md, overview.md, MEMORY.md,  -> <config>/memory/   (seed-if-absent)
+  - skills      (wiki-ingest, doc-review, wiki-sync)  -> <config>/skills/   (skip-if-exists)
+  - framework   (schema.md, overview.md, MEMORY.md,   -> <config>/memory/   (seed-if-absent)
                  log.md, sources/entities/concepts/synthesis/raw/raw/archive)
-  - CLAUDE.md   ingestion-policy block               -> <config>/CLAUDE.md  (sentinel-bounded)
+  - hook        (wiki-index-check.cjs)                -> <config>/hooks/ + settings.json (safe merge)
+  - CLAUDE.md   ingestion-policy block                -> <config>/CLAUDE.md  (sentinel-bounded)
 
-Detection-driven: every target is symlink-resolved and operated on at its REAL path, so the
-same script adapts to any layout (personal ~/.claude, a shared/team config, etc.) with no
-hardcoded paths. Interactive by default; pass any flag (or --yes) to run non-interactively.
-Nothing is written until you approve the printed plan (or pass --yes); --dry-run never writes.
+Detection-driven: every target is symlink-resolved and operated on at its REAL path, so the same
+script adapts to any layout (personal ~/.claude, a shared claude-global, etc.) with no hardcoded
+paths. Interactive by default; pass any flag (or --yes) to run non-interactively. Nothing is written
+until you approve the printed plan (or pass --yes); --dry-run never writes.
+
+Safe by design: existing skills are NOT overwritten (a skill may come from a plugin like ECC or be
+the user's own -- use --force-skills to replace, backed up first). settings.json is merged
+idempotently (backup, all other keys preserved). The installer NEVER commits the target repo.
 """
 from __future__ import annotations
 
 import argparse
-import datetime
 import os
 import shutil
 import subprocess
@@ -32,9 +36,11 @@ for _stream in (sys.stdout, sys.stderr):
 ENGINE = Path(__file__).resolve().parent
 VERSION = (ENGINE / "VERSION").read_text(encoding="utf-8").strip() if (ENGINE / "VERSION").exists() else "0.0.0"
 
-SKILL_SETS = {"core": ["wiki-ingest", "doc-review"]}
+SKILL_SETS = {"core": ["wiki-ingest", "doc-review", "wiki-sync"]}
 FRAMEWORK_FILES = ["schema.md", "overview.md", "MEMORY.md", "log.md"]
 FRAMEWORK_DIRS = ["sources", "entities", "concepts", "synthesis", "raw", os.path.join("raw", "archive")]
+# (hook file under engine hooks/, the settings.json event it registers under, the tool matcher)
+HOOKS = [("wiki-index-check.cjs", "PostToolUse", "Write|Edit|MultiEdit")]
 SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"
 
@@ -134,26 +140,19 @@ def link_or_copy(src: Path, dst: Path) -> str:
         return "copy (symlink unavailable)"
 
 
-def _backup(dst: Path) -> Path:
-    """Copy an existing file/dir aside to <name>.bak.<ts> before it is replaced."""
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    bak = dst.with_name(f"{dst.name}.bak.{ts}")
-    if dst.is_dir() and not dst.is_symlink():
-        shutil.copytree(dst, bak)
-    else:
-        shutil.copy2(dst, bak)
-    return bak
-
-
-def place_skill(src: Path, dst: Path, mode: str):
-    """Install a skill dir; back up any existing REAL dir first. copy or symlink."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if (dst.exists() or dst.is_symlink()) and not dst.is_symlink():
-        _backup(dst)
-    if mode == "symlink":
-        link_or_copy(src, dst)
-    else:
-        copy_tree(src, dst)
+def _backup(path: Path):
+    """Back up an existing file/dir before overwrite (.wikibak); best-effort, never raises."""
+    if not path.exists() or path.is_symlink():
+        return
+    bak = Path(str(path) + ".wikibak")
+    try:
+        if path.is_dir():
+            if not bak.exists():
+                shutil.copytree(path, bak)
+        else:
+            shutil.copy2(path, bak)
+    except Exception:
+        pass
 
 
 def read_text_keep_eol(path: Path) -> tuple[str, str]:
@@ -179,6 +178,26 @@ def inject_block(claude_md: Path, block: str):
         target.parent.mkdir(parents=True, exist_ok=True)
         new, eol = managed + "\n", "\n"
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
+
+
+def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
+    """Idempotently add a hook command to settings.json: backup first, preserve every other key,
+    keep a trailing newline. Surgical -- never touches the owner's other settings, never commits."""
+    import json
+    sp = settings_path.resolve() if settings_path.is_symlink() else settings_path
+    try:
+        d = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+    except Exception:
+        return  # never risk corrupting an unreadable/locked settings.json
+    arr = d.setdefault("hooks", {}).setdefault(event, [])
+    tail = command.split("/")[-1]
+    if any(tail in h.get("command", "") for e in arr for h in e.get("hooks", [])):
+        return  # already registered (idempotent)
+    if sp.exists():
+        shutil.copy2(sp, str(sp) + ".wikibak")
+    arr.append({"matcher": matcher, "hooks": [{"type": "command", "command": command}]})
+    sp.parent.mkdir(parents=True, exist_ok=True)
+    sp.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
 
 
 # ------------------------- prompts -------------------------
@@ -228,7 +247,7 @@ def run_wizard(cfg: dict) -> dict:
         print(describe(lbl, probe(base / sub)))
     t = choose("  Install into…", [
         ("personal", f"this config - {base}  (follows your symlinks)"),
-        ("repo", "vendor into a specific repo (e.g. a shared/team config)"),
+        ("repo", "vendor into a specific repo (e.g. a shared claude-global)"),
     ], default=1)
     if t == 2:
         repo = ask("  Repo path", str(base))
@@ -261,9 +280,9 @@ def run_wizard(cfg: dict) -> dict:
     cfg["claude_md"] = confirm(
         f"\n[4/5] Add the ingestion-policy block to {cfg['config_base'].name}/CLAUDE.md (reversible)?")
 
-    # [5] skills set (only 'core' shipped today)
+    # [5] skills + hook
     cfg["skills"] = SKILL_SETS["core"]
-    print(f"\n[5/5] Skills: {', '.join(cfg['skills'])}  (core)")
+    print(f"\n[5/5] Skills: {', '.join(cfg['skills'])} (skip any already present) + wiki-index-check hook")
     return cfg
 
 
@@ -285,18 +304,20 @@ def build_plan(cfg: dict) -> Plan:
             plan.add("clone", f"{url} -> {memory_dir}",
                      lambda u=url, d=memory_dir: subprocess.run(["git", "clone", u, str(d)], check=True))
 
-    # skills (keep an existing skill of the same name unless --force; back up before replacing)
+    # skills - SKIP existing (could be a plugin/ECC or the user's own); --force-skills replaces (backup first)
     skills_real = skills_dir.resolve() if skills_dir.is_symlink() else skills_dir
     for name in cfg["skills"]:
         src = ENGINE / "skills" / name
         dst = skills_real / name
-        exists = dst.exists() or dst.is_symlink()
-        if exists and not cfg.get("force"):
-            plan.note(f"keep existing skill '{name}' (present; --force to replace with the engine copy)")
+        if dst.exists() and not cfg.get("force_skills"):
+            plan.note(f"skip skill '{name}' (already present - not overwriting; --force-skills to replace)")
             continue
-        verb = "link" if mode == "symlink" else ("replace" if exists else "copy")
-        detail = f"{name} -> {dst}" + ("  (backs up existing first)" if exists and mode != "symlink" else "")
-        plan.add(verb, detail, lambda s=src, d=dst, m=mode: place_skill(s, d, m))
+        if mode == "symlink":
+            plan.add("link", f"{name} -> {dst}",
+                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), link_or_copy(s, d)))
+        else:
+            plan.add("copy", f"skills/{name} -> {dst}",
+                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
 
     # framework (seed-if-absent)
     mem_real = memory_dir.resolve() if memory_dir.is_symlink() else memory_dir
@@ -311,6 +332,19 @@ def build_plan(cfg: dict) -> Plan:
         dst = mem_real / d
         if not dst.exists():
             plan.add("mkdir", f"memory/{d}/", lambda dd=dst: dd.mkdir(parents=True, exist_ok=True))
+
+    # hooks - copy the (non-blocking) wiki-index-check + safe idempotent settings.json merge
+    if cfg.get("hooks", True):
+        hooks_real = base / "hooks"
+        for hf, event, matcher in HOOKS:
+            hsrc, hdst = ENGINE / "hooks" / hf, hooks_real / hf
+            if not hsrc.exists():
+                continue
+            plan.add("hook", f"{hf} -> {hdst}",
+                     lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+            cmd, sp = f"node {hdst}", base / "settings.json"
+            plan.add("wire", f"settings.json[{event}] += {hf} (idempotent, backup)",
+                     lambda c=cmd, e=event, m=matcher, s=sp: merge_hook(s, c, e, m))
 
     # CLAUDE.md policy block
     if cfg["claude_md"]:
@@ -327,15 +361,21 @@ def build_plan(cfg: dict) -> Plan:
 
 
 def do_update(cfg: dict):
-    print("Updating engine + re-copying skills (content untouched)…")
+    print("Updating engine + re-copying ITS skills + refreshing the hook (content untouched)…")
     subprocess.run(["git", "-C", str(ENGINE), "pull", "--ff-only"], check=False)
     plan = Plan(cfg["dry_run"])
     base, skills_dir = cfg["config_base"], cfg["config_base"] / "skills"
     skills_real = skills_dir.resolve() if skills_dir.is_symlink() else skills_dir
     for name in cfg["skills"]:
         src, dst = ENGINE / "skills" / name, skills_real / name
-        plan.add("copy", f"skills/{name} -> {dst}  (backs up existing first)",
-                 lambda s=src, d=dst: place_skill(s, d, "copy"))
+        plan.add("copy", f"skills/{name} -> {dst}",
+                 lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), copy_tree(s, d)))
+    if cfg.get("hooks", True):
+        for hf, event, matcher in HOOKS:
+            hsrc, hdst = ENGINE / "hooks" / hf, base / "hooks" / hf
+            if hsrc.exists():
+                plan.add("hook", f"{hf} -> {hdst}",
+                         lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
     cmd = base / "CLAUDE.md"
     block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
     plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
@@ -350,15 +390,17 @@ def main():
     ap.add_argument("--memory", help="content/memory directory (default: <config>/memory)")
     ap.add_argument("--content-repo", help="git URL to clone AS the memory dir")
     ap.add_argument("--mode", choices=["copy", "symlink"], help="how to install skills (default: copy)")
+    ap.add_argument("--force-skills", action="store_true", help="replace existing skills (backs up first); default skips them")
+    ap.add_argument("--no-hooks", action="store_true", help="do not install the wiki-index-check hook")
     ap.add_argument("--no-claude-md", action="store_true", help="skip the CLAUDE.md policy block")
     ap.add_argument("--skills", choices=list(SKILL_SETS), default="core")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit; write nothing")
     ap.add_argument("-y", "--yes", action="store_true", help="accept defaults, no prompts")
-    ap.add_argument("--update", action="store_true", help="re-pull engine + re-copy skills; never touch content")
-    ap.add_argument("--force", action="store_true", help="overwrite existing skills (backed up first); default keeps them")
+    ap.add_argument("--update", action="store_true", help="re-pull engine + re-copy ITS skills/hook; never touch content")
     args = ap.parse_args()
 
-    flags_given = any([args.into_repo, args.memory, args.content_repo, args.mode, args.no_claude_md, args.update])
+    flags_given = any([args.into_repo, args.memory, args.content_repo, args.mode, args.force_skills,
+                       args.no_hooks, args.no_claude_md, args.update])
     interactive = not (args.yes or flags_given) and sys.stdin.isatty()
 
     base = Path(args.into_repo).expanduser() if args.into_repo else claude_dir()
@@ -370,7 +412,8 @@ def main():
         "content_repo": args.content_repo,
         "claude_md": not args.no_claude_md,
         "skills": SKILL_SETS[args.skills],
-        "force": args.force,
+        "force_skills": args.force_skills,
+        "hooks": not args.no_hooks,
     }
     if interactive:
         cfg = run_wizard(cfg)
@@ -391,7 +434,8 @@ def main():
         print("aborted - nothing written")
         return
     plan.execute()
-    print(f"\n  [ok] installed (v{VERSION}). Next: open Claude, run /wiki-ingest, and commit your content repo.")
+    print(f"\n  [ok] installed (v{VERSION}). Note: GateGuard may already come from the ECC plugin - "
+          f"the installer skips existing skills, so nothing was duplicated. Next: open Claude, run /wiki-ingest.")
 
 
 if __name__ == "__main__":
