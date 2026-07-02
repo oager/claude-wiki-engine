@@ -39,6 +39,22 @@ VERSION = (ENGINE / "VERSION").read_text(encoding="utf-8").strip() if (ENGINE / 
 SKILL_SETS = {"core": ["wiki-ingest", "doc-review", "wiki-sync"]}
 FRAMEWORK_FILES = ["schema.md", "overview.md", "MEMORY.md", "log.md"]
 FRAMEWORK_DIRS = ["sources", "entities", "concepts", "synthesis", "raw", os.path.join("raw", "archive")]
+# Canonical gitignore: the wiki SHOULD be version-controlled (history + sync). Only the raw inbox is
+# local scratch — but keep the inbox README and the immutable archive of ingested originals.
+RAW_GITIGNORE = (
+    "# Wiki inbox: raw sources are local scratch — not version-controlled.\n"
+    "# The wiki itself IS tracked; we only ignore unprocessed inbox files.\n"
+    "# Keep the inbox README and the immutable archive of ingested originals.\n"
+    "raw/*\n"
+    "!raw/README.md\n"
+    "!raw/archive/\n"
+)
+RAW_README = (
+    "# raw/ - ingest inbox\n\n"
+    "Drop raw sources here (`.md` / `.txt` / `.pdf` / images), then run `/wiki-ingest` to file them\n"
+    "into the wiki. Ingested originals are MOVED to `raw/archive/` (kept forever, version-controlled).\n"
+    "Everything else in this folder is local scratch and is gitignored.\n"
+)
 # (hook file under engine hooks/, the settings.json event it registers under, the tool matcher)
 HOOKS = [
     ("wiki-index-check.cjs", "PostToolUse", "Write|Edit|MultiEdit"),
@@ -356,6 +372,18 @@ def build_plan(cfg: dict) -> Plan:
         dst = mem_real / d
         if not dst.exists():
             plan.add("mkdir", f"memory/{d}/", lambda dd=dst: dd.mkdir(parents=True, exist_ok=True))
+
+    # gitignore the inbox (seed-if-absent): wiki stays tracked, raw/* is scratch, archive is kept.
+    gi = mem_real / ".gitignore"
+    if gi.exists():
+        plan.note("keep memory/.gitignore (exists)")
+    else:
+        plan.add("seed", f".gitignore (track wiki; ignore raw/*, keep archive) -> {mem_real}",
+                 lambda g=gi: (g.parent.mkdir(parents=True, exist_ok=True), g.write_text(RAW_GITIGNORE, encoding="utf-8")))
+    rr = mem_real / "raw" / "README.md"
+    if not rr.exists():
+        plan.add("seed", f"raw/README.md (inbox doc) -> {mem_real}",
+                 lambda r=rr: (r.parent.mkdir(parents=True, exist_ok=True), r.write_text(RAW_README, encoding="utf-8")))
 
     # hooks - copy the (non-blocking) wiki-index-check + safe idempotent settings.json merge
     if cfg.get("hooks", True):
