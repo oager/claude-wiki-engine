@@ -42,6 +42,9 @@ python3 install.py --update                       # re-pull engine + re-copy ITS
   all other keys preserved**.
 - `schema.md`, `overview.md`, `MEMORY.md`, `log.md` + `sources/ entities/ concepts/ synthesis/ raw/ raw/archive/`
   → `<config>/memory/` (seed-if-absent; never overwrites your pages).
+- `memory/.gitignore` + `memory/raw/README.md` (seed-if-absent) — encodes the canonical pattern:
+  **the wiki is tracked**, only `raw/*` (the unprocessed inbox) is ignored, and `raw/README.md` +
+  `raw/archive/` (ingested originals) are kept.
 - a reversible ingestion-policy block in `<config>/CLAUDE.md` (between `<!-- wiki-engine:start/end -->` sentinels).
 
 ## How it adapts (no hardcoding)
@@ -56,8 +59,12 @@ The installer resolves symlinks and writes to the **real** target, so it fits an
   backed up to `.wikibak`, every other key preserved, trailing newline kept.
 - **The installer NEVER commits the target repo** — it only writes files; you commit your own changes,
   so it can't sweep up an owner's in-progress work.
-- **Content lives on disk** in `memory/` and may be gitignored by the surrounding repo — that's fine;
-  Claude reads it from disk regardless.
+- **Track the wiki; ignore only the inbox.** Claude reads `memory/` from disk regardless of git, but
+  you *want* it version-controlled — history, backup, and cross-machine sync. The installer seeds a
+  `memory/.gitignore` so `raw/*` (unprocessed inbox) stays out of git while the pages, `raw/README.md`,
+  and `raw/archive/` (ingested originals) are committed. **Pitfall:** if a parent directory is excluded
+  wholesale (e.g. a repo whose `.gitignore` drops all of `users/`), your entire live wiki silently loses
+  history and sync — and a stale tracked copy elsewhere becomes a confusion trap. Track the real wiki dir.
 
 ## Notes
 - Defaults to **copy** (works everywhere). `--mode symlink` is opt-in and falls back to copy if the OS blocks symlinks.
