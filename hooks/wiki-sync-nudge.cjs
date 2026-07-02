@@ -13,7 +13,11 @@ try {
   const raw = fs.readFileSync(0, 'utf8') || '{}';
   const d = JSON.parse(raw);
   if (d.stop_hook_active) process.exit(0);            // already continuing from a stop hook -> never loop
-  const sid = String(d.session_id || 'default').replace(/[^a-z0-9]/gi, '_').slice(0, 40);
+  // Key the once-per-session flag on session_id, falling back to the per-session transcript_path so
+  // sessions without a session_id don't all collide on a shared 'default' flag (which would fire the
+  // nudge only once ever until tmp clears, instead of once per session). Keep the unique tail.
+  const seed = d.session_id || d.transcript_path || 'default';
+  const sid = String(seed).replace(/[^a-z0-9]/gi, '_').slice(-40) || 'default';
   const flag = `${os.tmpdir()}/.wiki_sync_nudge_${sid}`;
   if (fs.existsSync(flag)) process.exit(0);           // already nudged once this session
   try { fs.writeFileSync(flag, '1'); } catch (_e) {}
