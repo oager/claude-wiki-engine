@@ -348,7 +348,7 @@ def build_plan(cfg: dict) -> Plan:
                 continue
             plan.add("hook", f"{hf} -> {hdst}",
                      lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
-            cmd, sp = f"node {hdst}", base / "settings.json"
+            cmd, sp = f"node {hdst.as_posix()}", base / "settings.json"
             plan.add("wire", f"settings.json[{event}] += {hf} (idempotent, backup)",
                      lambda c=cmd, e=event, m=matcher, s=sp: merge_hook(s, c, e, m))
 
