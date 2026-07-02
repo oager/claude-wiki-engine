@@ -61,8 +61,12 @@ The installer resolves symlinks and writes to the **real** target, so it fits an
 
 ## Notes
 - Defaults to **copy** (works everywhere). `--mode symlink` is opt-in and falls back to copy if the OS blocks symlinks.
-- `--update` refreshes engine-owned files only; your content and edits are never touched.
-- The `Stop` nudge fires **once per session** (a tmp flag), is loop-safe, and lets Claude no-op on a routine session; disable with `WIKI_SYNC_NUDGE=off`.
-- The `wiki-index-check` hook keys on a `…/.claude/memory/…` path; if your memory dir is mounted
-  elsewhere, writes that go through the `~/.claude/memory` symlink still trigger it.
+- `--update` refreshes engine-owned files only; your content and edits are never touched. It also
+  **re-wires `settings.json` (self-healing)**: a stale/broken hook command from an older install —
+  e.g. a pre-fix Windows backslash path — is repaired in place, not left behind.
+- The `Stop` nudge fires **once per session** (a tmp flag keyed on the session id, or the transcript
+  path when no id is present), is loop-safe, and lets Claude no-op on a routine session; disable with `WIKI_SYNC_NUDGE=off`.
+- The `wiki-index-check` hook is **config-adaptive**: it finds the wiki by the nearest `MEMORY.md`
+  above the written file, so it works for a global `~/.claude/memory`, a repo-vendored wiki, a
+  project-scoped `.claude/projects/<slug>/memory`, or any custom `--memory` path — no fixed location.
 - Roadmap: submodule mode; optional extra skills (dictionary / postmortem).

@@ -184,8 +184,14 @@ def inject_block(claude_md: Path, block: str):
 
 
 def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
-    """Idempotently add a hook command to settings.json: backup first, preserve every other key,
-    keep a trailing newline. Surgical -- never touches the owner's other settings, never commits."""
+    """Register (or RECONCILE) a hook command in settings.json: backup first, preserve every other
+    key, keep a trailing newline. Surgical -- never touches the owner's other settings, never commits.
+
+    Idempotent AND self-healing: matches an existing entry by the hook SCRIPT FILENAME (the stable
+    identity), so a stale/broken command for the same hook -- e.g. a pre-fix Windows backslash path
+    that a POSIX shell mangles -- is UPDATED in place instead of left untouched. Without this, a fix to
+    the generated command (like the as_posix path fix) could never reach an already-installed hook: the
+    old filename-substring check treated 'same filename' as 'already correct' and skipped."""
     import json
     sp = settings_path.resolve() if settings_path.is_symlink() else settings_path
     try:
@@ -193,15 +199,27 @@ def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
     except Exception:
         return  # never risk corrupting an unreadable/locked settings.json
     arr = d.setdefault("hooks", {}).setdefault(event, [])
-    tail = command.split("/")[-1]
-    if any(tail in h.get("command", "") for e in arr for h in e.get("hooks", [])):
-        return  # already registered (idempotent)
+    script = command.split()[-1]                      # the hook script path (last token of `node <path>`)
+    fname = script.replace("\\", "/").split("/")[-1]  # its filename = the hook's stable identity
+    found = updated = False
+    for e in arr:
+        for h in e.get("hooks", []):
+            hc = h.get("command", "")
+            hc_fname = hc.replace("\\", "/").split("/")[-1] if hc else ""
+            if hc_fname == fname:                      # same hook script -> this is our entry
+                found = True
+                if hc != command:                      # stale/broken command -> reconcile in place
+                    h["command"] = command
+                    updated = True
+    if found and not updated:
+        return  # already registered AND current (idempotent no-op)
     if sp.exists():
         shutil.copy2(sp, str(sp) + ".wikibak")
-    entry = {"hooks": [{"type": "command", "command": command}]}
-    if matcher:
-        entry = {"matcher": matcher, **entry}   # Stop/SessionStart hooks take no matcher
-    arr.append(entry)
+    if not found:
+        entry = {"hooks": [{"type": "command", "command": command}]}
+        if matcher:
+            entry = {"matcher": matcher, **entry}      # Stop/SessionStart hooks take no matcher
+        arr.append(entry)
     sp.parent.mkdir(parents=True, exist_ok=True)
     sp.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
 
@@ -382,6 +400,11 @@ def do_update(cfg: dict):
             if hsrc.exists():
                 plan.add("hook", f"{hf} -> {hdst}",
                          lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+                # Re-wire settings.json too (idempotent + self-healing) so an update actually
+                # REPAIRS a stale/broken command on an existing install, not just the hook file.
+                cmd_hook, sp = f"node {hdst.as_posix()}", base / "settings.json"
+                plan.add("wire", f"settings.json[{event}] reconcile {hf}",
+                         lambda c=cmd_hook, e=event, m=matcher, s=sp: merge_hook(s, c, e, m))
     cmd = base / "CLAUDE.md"
     block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
     plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
