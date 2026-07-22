@@ -2,6 +2,7 @@
 name: recap
 description: Generate a paste-ready handoff markdown file summarizing the current session's work. For sharing with Ubuntu/Linux Claude (CryptoDesk side) or any other Claude session that needs to catch up on what Windows Claude has been doing. Saves the file to Downloads so it's easy to paste.
 disable-model-invocation: true
+model: sonnet
 ---
 
 # /recap — session handoff document

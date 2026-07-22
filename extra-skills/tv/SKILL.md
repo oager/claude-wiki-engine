@@ -2,6 +2,7 @@
 name: tv
 description: Launch TradingView Desktop with CDP debugging port so the TradingView MCP can connect. Use whenever TV isn't open, the MCP reports it's disconnected, or the user says "launch tv", "open tv", "start tv", "tv not connecting", "check tv", "reconnect tradingview", or anything implying TradingView needs to be running for chart work to proceed.
 disable-model-invocation: true
+model: haiku
 ---
 
 # /tv — Launch TradingView with CDP
