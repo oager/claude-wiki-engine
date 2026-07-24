@@ -56,7 +56,9 @@ The installer resolves symlinks and writes to the **real** target, so it fits an
   (`~/.claude/plugins/`) and won't show up in `skills/` or `settings.json`; the installer skips any skill
   already present so it never duplicates or downgrades a plugin/user version (`--force-skills` to override).
 - **`settings.json` is edited surgically** — parsed/merged/written as JSON (valid by construction),
-  backed up to `.wikibak`, every other key preserved, trailing newline kept.
+  backed up to `.wikibak`, every other key preserved, trailing newline kept. The `.wikibak` snapshot is
+  taken **once per run**, before any wiring — a run that wires several hooks would otherwise overwrite it
+  with a mid-install checkpoint, leaving you unable to restore true pre-install state.
 - **The installer NEVER commits the target repo** — it only writes files; you commit your own changes,
   so it can't sweep up an owner's in-progress work.
 - **Track the wiki; ignore only the inbox.** Claude reads `memory/` from disk regardless of git, but
@@ -65,6 +67,14 @@ The installer resolves symlinks and writes to the **real** target, so it fits an
   and `raw/archive/` (ingested originals) are committed. **Pitfall:** if a parent directory is excluded
   wholesale (e.g. a repo whose `.gitignore` drops all of `users/`), your entire live wiki silently loses
   history and sync — and a stale tracked copy elsewhere becomes a confusion trap. Track the real wiki dir.
+
+## Tests
+Stdlib `unittest`, no dependencies — from the repo root:
+```bash
+python -m unittest discover tests
+```
+Regression coverage for the surgical `settings.json` merge: the `.wikibak` snapshot survives a multi-hook
+run, repeat/idempotent calls don't clobber it, and unrelated user keys are preserved.
 
 ## Notes
 - Defaults to **copy** (works everywhere). `--mode symlink` is opt-in and falls back to copy if the OS blocks symlinks.
