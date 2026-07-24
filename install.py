@@ -199,9 +199,16 @@ def inject_block(claude_md: Path, block: str):
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
 
 
+_SNAPSHOTTED: set[str] = set()  # files backed up THIS run -- snapshot once, before ANY wiring
+
+
 def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
     """Register (or RECONCILE) a hook command in settings.json: backup first, preserve every other
     key, keep a trailing newline. Surgical -- never touches the owner's other settings, never commits.
+
+    The .wikibak snapshot is taken ONCE PER RUN, not per hook. Wiring two hooks in one run used to
+    overwrite the backup on the second call, so .wikibak held a mid-install checkpoint (already
+    containing the first hook) instead of the true pre-install state -- useless for reverting.
 
     Idempotent AND self-healing: matches an existing entry by the hook SCRIPT FILENAME (the stable
     identity), so a stale/broken command for the same hook -- e.g. a pre-fix Windows backslash path
@@ -229,8 +236,9 @@ def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
                     updated = True
     if found and not updated:
         return  # already registered AND current (idempotent no-op)
-    if sp.exists():
+    if sp.exists() and str(sp) not in _SNAPSHOTTED:
         shutil.copy2(sp, str(sp) + ".wikibak")
+        _SNAPSHOTTED.add(str(sp))
     if not found:
         entry = {"hooks": [{"type": "command", "command": command}]}
         if matcher:
