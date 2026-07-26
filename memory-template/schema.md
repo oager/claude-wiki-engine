@@ -63,13 +63,28 @@ later reverses.
 ## Page conventions
 
 - One topic per page; lead with what it is + why it matters.
-- Index line ≤150 chars: `- [Title](file.md) — summary`.
+- Index line = **a link + a one-line summary**: `- [Title](file.md) — summary`. **No character cap.**
+  The test is a role test, not a count: the line exists to help you decide *whether to open the page*,
+  never to substitute for reading it. If a line contains the finding itself, that detail belongs on
+  the page. (Karpathy specifies "a link, a one-line summary"; Anthropic's memory guidance says "one
+  line per entry, move detail into topic files". Neither states a character count — a `≤150` cap
+  shipped here through v0.3.3 was invented, and in practice ~95% of entries violated it, so it only
+  ever produced false lint findings.)
+- **Organize `MEMORY.md` into `##` sections by category** once it outgrows a single screen — Karpathy
+  specifies an index *"organized by category (entities, concepts, sources, etc.)"*, and Anthropic's
+  structure guidance agrees: *"organized sections are easier to follow than dense paragraphs."* This
+  is a **routing/scannability** win, not a token one (the whole file still loads) — don't evaluate it
+  as a cost saving. Pick categories that fit your domain; the simplest scheme mirrors the routing
+  folders (Concepts & lessons · Sources · Entities · Synthesis), and a large `concepts/` set is worth
+  splitting thematically. Keep placement **derivable** (folder + tags) so ingest never has to guess,
+  and apply any bulk re-section **programmatically with a before/after assertion that the set of
+  index lines is unchanged** — hand-editing an index silently drops entries.
 - Dates absolute (`2026-06-16`), never relative.
 - Frontmatter (keep consistent — a missing field can silently drop the note from queries):
   ```
   name: <title>
   description: <one sentence>
-  type: feedback | reference | project
+  type: feedback | reference | project | concept
   tags: [<from your controlled vocabulary>]
   updated: YYYY-MM-DD
   source: <raw/archive/file>   # only when ingested from a raw source
@@ -102,5 +117,27 @@ pages. Defenses:
 
 ## Scaling ceiling
 
-A read-the-whole-index approach breaks down past ~100–200 pages. When this wiki exceeds ~150 pages,
-revisit a hybrid (BM25 + vector) search instead of full-index reads.
+**Corrected in v0.4.0.** Through v0.3.3 this section claimed a read-the-whole-index approach *"breaks
+down past ~100–200 pages"*. That **inverted** the source. Karpathy's gist, verbatim:
+
+> "The LLM reads the index first to find relevant pages, then drills into them. **This works
+> surprisingly well at moderate scale (~100 sources, ~hundreds of pages)** and avoids the need for
+> embedding-based RAG infrastructure."
+
+Same subject — reading the whole index at that scale — opposite verdict. The likely origin of the old
+figure is "~100 **sources**, ~hundreds of **pages**" collapsed into one number with the units lost.
+**No hard page ceiling is stated anywhere in the gist.** If you are in the hundreds of pages, you are
+inside the range the pattern is documented to work in; measure a real cost before restructuring.
+
+**The escape hatch is search, not surgery.** Per the gist: *"at small scale the index file is enough,
+but as the wiki grows you want proper search"* → [qmd](https://github.com/tobi/qmd), a local hybrid
+BM25/vector search over markdown with LLM re-ranking, shipping both a CLI and an MCP server. Reach
+for that before splitting the index, and before capping summary length (a length cap is lossy and
+buys little; see Page conventions).
+
+**Don't confuse this with Anthropic's auto-memory limit.** Claude Code hard-limits its *auto-memory*
+index — *"the first 200 lines of `MEMORY.md`, or the first 25KB, whichever comes first"*, with the
+remainder **silently dropped at session start** — and the runtime warns/errors on write near it. That
+governs `~/.claude/projects/<slug>/memory/MEMORY.md`. A wiki that Claude reads via a `CLAUDE.md`
+instruction with the Read tool is **not** subject to it. Know which of the two you are looking at
+before acting on a size number: they obey different rules.

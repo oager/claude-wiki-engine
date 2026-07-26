@@ -30,11 +30,19 @@ Do not skip any file. Do not form opinions yet. This is the most important rule 
 - **B · Duplicates** — same substantive info in 2+ places. Name the canonical home; propose removing/one-lining the copy. (Don't flag deliberate cross-references or differing-detail copies.)
 - **C · Dead weight** — content with no future signal. Propose remove/collapse. **Never remove** durable lessons, postmortems, root causes, or active rules.
 - **D · Compress** — verbose prose shortenable losslessly. Secondary; never compress exact values/params/numbers. When in doubt, leave it.
-- **G · Wiki integrity** (enforces schema.md):
+- **G · Wiki integrity** (enforces schema.md). *Structural checks — cheap, mechanical:*
   - **Orphans** — pages with no inbound `[[wikilinks]]`; propose 2–4 `Related:` links or merge. (Hub files MEMORY.md/log.md/schema.md/overview.md exempt.)
   - **Broken links** — `[[name]]` with no matching `name.md`; propose the right target or removal.
-  - **Frontmatter** — a page missing `tags:`/`updated:` is silently dropped from queries; propose additions.
+  - **Frontmatter** — a page missing `tags:`/`updated:` is silently dropped from queries; propose additions. Also flag fields nested under a `metadata:` key — queries read those as `metadata.*`, so the page drops out just as silently.
   - **Expiry** — `expires:` in the past → MARK STALE with a pointer header; **do not delete**.
+  - **Index length is NOT a check** — there is no character cap (removed v0.4.0). Flag a summary only if it fails the role test: it contains the finding itself instead of helping you decide whether to open the page.
+- **H · Semantic integrity — run this FIRST when time is limited.** Karpathy's lint list is entirely
+  semantic and mentions formatting nowhere; a pass returning dozens of formatting findings and zero
+  contradictions is aimed wrong. These are where the real defects live:
+  - **Contradictions** — two pages asserting incompatible facts (counts, verdicts, causes, "X does" vs "X does not"). Highest-value check and the easiest to skip, because both sides read as confident prose. Quote both, say which is ground-truth-verified, propose the fix on the wrong one — never silently overwrite; note the reversal explicitly.
+  - **Stale claims** — assertions a newer source or later page has superseded (distinct from Pass A: page-vs-page, not page-vs-world).
+  - **Concepts without a page** — a term used across ≥2 pages as if established, with no page defining it. Propose creating it, or pointing at the page that already covers it.
+  - **Data gaps** — claims resting on a number, quote, or threshold with no cited source, especially ones that steer decisions. Propose verifying against the primary source. **A rule is a hypothesis too**: if a convention cites no source and the corpus violates it lopsidedly, the rule is the likely defect, not the corpus.
 
 ## Step 3 — Present findings
 Group by pass; for each: `[CATEGORY] file:line` / Current / Proposed / Risk (low|med). End with a summary table, then ask: "Which categories should I apply?"

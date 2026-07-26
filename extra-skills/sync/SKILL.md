@@ -26,7 +26,9 @@ Update persistent memory for the current project, then push the vault so every m
 Did this session produce anything worth remembering across future sessions? (user feedback like
 "always/never do X", a discovery that applies beyond this one task, a workflow or tooling lesson that
 saved or wasted time, a cross-machine finding.)
-- If yes: write a memory file and add a one-line index entry to `MEMORY.md` (≤150 chars).
+- If yes: write a memory file and add a one-line index entry to `MEMORY.md` (a link + a one-line
+  summary; no character cap — see schema.md "Page conventions". If the index is sectioned, file it
+  under the matching `##` category).
 - If no: skip — don't invent entries just to have something to show. Also scan the indexed files and
   fix or remove anything now stale.
 
@@ -104,5 +106,7 @@ status.
   reboot clears the handle; an AV exclusion for the vault prevents recurrence.
 - **After a messy rebase, verify your edits survived** (`git show HEAD:<file>` for your key markers) —
   a same-file rebase can auto-merge changes away with no conflict shown.
-- Convert relative dates to absolute when saving; keep `MEMORY.md` index entries under 150 chars; only
+- Convert relative dates to absolute when saving; keep `MEMORY.md` index entries to a link + a
+  one-line summary (no character cap — the test is whether the line helps you decide to open the
+  page, not its length); only
   add genuinely new information; if nothing meaningful changed, say so and skip.

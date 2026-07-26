@@ -54,7 +54,17 @@ conventions, routing, supersession, and guardrails. This skill is the *procedure
    explicitly — never silently overwrite. If it supersedes a page, mark the old one stale with a
    pointer header — never delete.
 
-6. **Index** — add or refresh the `memory/MEMORY.md` line: `- [Title](subfolder/file.md) — ≤150-char summary`.
+6. **Index** — add or refresh the `memory/MEMORY.md` line: `- [Title](subfolder/file.md) — one-line summary`.
+   **No character cap** (the `≤150` rule was removed in v0.4.0 — invented, in neither source, ~95%
+   violated). Role test instead: enough to decide *whether to open the page*, never a substitute for
+   reading it.
+
+   **If `MEMORY.md` is sectioned** (`##` category headers — see schema.md "Page conventions"), place
+   the line under the right section. Make this **derivable, not a judgement call**: route by the
+   page's folder first (`sources/` → Sources, `entities/` → Entities, `synthesis/` → Synthesis), and
+   for `concepts/` or loose root pages pick by the first matching tag scanning your section order
+   top-to-bottom, with the last section as the fallback. Adding a NEW section is a deliberate schema
+   change — say so, don't silently invent one.
 
 7. **Cross-link** — append a `Related: [[a]] · [[b]] · [[c]]` wikilink footer (≤4 highest-relevance neighbors).
 
