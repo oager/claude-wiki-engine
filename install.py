@@ -3,6 +3,7 @@
 
 Installs the Karpathy-style LLM-wiki engine into a Claude Code config:
   - skills      (wiki-ingest, doc-review, wiki-sync)  -> <config>/skills/   (skip-if-exists)
+  - extras      (optional workflow skills, opt-in)    -> <config>/skills/   (skip-if-exists)
   - framework   (schema.md, overview.md, MEMORY.md,   -> <config>/memory/   (seed-if-absent)
                  log.md, sources/entities/concepts/synthesis/raw/raw/archive)
   - hook        (wiki-index-check.cjs)                -> <config>/hooks/ + settings.json (safe merge)
@@ -37,6 +38,18 @@ ENGINE = Path(__file__).resolve().parent
 VERSION = (ENGINE / "VERSION").read_text(encoding="utf-8").strip() if (ENGINE / "VERSION").exists() else "0.0.0"
 
 SKILL_SETS = {"core": ["wiki-ingest", "doc-review", "wiki-sync"]}
+# Optional workflow skills. Independent of the wiki engine - install any, all, or none.
+EXTRA_SKILLS = {
+    "error-harden":        "Post-bugfix checklist: enumerate failure modes, auto-handle, alert, document",
+    "karpathy-guidelines": "Behavioural guardrails against common LLM coding mistakes",
+    "preflight":           "Session startup: sync the vault, load memory, orient, brief. Read-only",
+    "recap":               "Generate a paste-ready handoff doc for another session or machine",
+    "regression":          "Run the project regression suite and block on failure",
+    "ripple":              "Consumer-impact sweep when data or interfaces change: what breaks downstream",
+    "sync":                "End-of-session ritual: update memory, promote findings, push the vault safely",
+    "tiered-build":        "Three-model build pipeline with hard gates between design, spec, and build",
+    "tv":                  "Launch TradingView with a CDP debugging port for chart automation",
+}
 FRAMEWORK_FILES = ["schema.md", "overview.md", "MEMORY.md", "log.md"]
 FRAMEWORK_DIRS = ["sources", "entities", "concepts", "synthesis", "raw", os.path.join("raw", "archive")]
 # Canonical gitignore: the wiki SHOULD be version-controlled (history + sync). Only the raw inbox is
@@ -281,6 +294,51 @@ def choose(prompt: str, options: list[tuple[str, str]], default: int = 1) -> int
 
 # ------------------------- wizard -------------------------
 
+def pick_extras() -> list[str]:
+    """Offer the optional workflow skills. Returns the chosen names (possibly empty)."""
+    print("\n[6/6] Optional extra skills - independent of the wiki engine, install any or none:")
+    names = list(EXTRA_SKILLS)
+    for i, n in enumerate(names, 1):
+        print(f"  {i:>2}) {n:<20} {EXTRA_SKILLS[n]}")
+    print("\n  Enter numbers or names (comma/space separated), 'all', or 'none'.")
+    ans = ask("Extras", "none").strip().lower()
+    if ans in ("", "none", "n"):
+        return []
+    if ans in ("all", "a"):
+        return names
+    chosen, unknown = [], []
+    for tok in ans.replace(",", " ").split():
+        if tok.isdigit():
+            i = int(tok)
+            if 1 <= i <= len(names):
+                chosen.append(names[i - 1])
+            else:
+                unknown.append(tok)
+        elif tok in EXTRA_SKILLS:
+            chosen.append(tok)
+        else:
+            unknown.append(tok)
+    if unknown:
+        print(f"  ignored (not a skill): {', '.join(unknown)}")
+    seen = dict.fromkeys(chosen)  # de-dupe, keep order
+    print(f"  selected: {', '.join(seen) if seen else 'none'}")
+    return list(seen)
+
+
+def resolve_extras(arg: str | None) -> list[str]:
+    """Non-interactive --extras parsing: 'all', 'none', or a comma-separated list."""
+    if not arg or arg.lower() == "none":
+        return []
+    if arg.lower() == "all":
+        return list(EXTRA_SKILLS)
+    out, unknown = [], []
+    for tok in arg.replace(",", " ").split():
+        (out if tok in EXTRA_SKILLS else unknown).append(tok)
+    if unknown:
+        print(f"warning: unknown extra skill(s) ignored: {', '.join(unknown)}")
+    return list(dict.fromkeys(out))
+
+
 def claude_dir() -> Path:
     return Path(os.environ.get("CLAUDE_DIR", Path.home() / ".claude"))
 
@@ -330,7 +388,10 @@ def run_wizard(cfg: dict) -> dict:
 
     # [5] skills + hook
     cfg["skills"] = SKILL_SETS["core"]
-    print(f"\n[5/5] Skills: {', '.join(cfg['skills'])} (skip any already present) + wiki-index-check hook")
+    print(f"\n[5/6] Core skills: {', '.join(cfg['skills'])} (skip any already present) + wiki-index-check hook")
+
+    # [6] optional extra skills
+    cfg["extra_skills"] = pick_extras()
     return cfg
 
 
@@ -365,6 +426,23 @@ def build_plan(cfg: dict) -> Plan:
                      lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), link_or_copy(s, d)))
         else:
             plan.add("copy", f"skills/{name} -> {dst}",
+                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+
+    # optional extra skills - same skip-if-exists safety as the core set
+    for name in cfg.get("extra_skills") or []:
+        src = ENGINE / "extra-skills" / name
+        dst = skills_real / name
+        if not src.exists():
+            plan.note(f"skip extra '{name}' (not in this engine version)")
+            continue
+        if dst.exists() and not cfg.get("force_skills"):
+            plan.note(f"skip extra '{name}' (already present - not overwriting; --force-skills to replace)")
+            continue
+        if mode == "symlink":
+            plan.add("link", f"{name} (extra) -> {dst}",
+                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), link_or_copy(s, d)))
+        else:
+            plan.add("copy", f"extra-skills/{name} -> {dst}",
                      lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
 
     # framework (seed-if-absent)
@@ -459,6 +537,9 @@ def main():
     ap.add_argument("--no-hooks", action="store_true", help="do not install the wiki-index-check hook")
     ap.add_argument("--no-claude-md", action="store_true", help="skip the CLAUDE.md policy block")
     ap.add_argument("--skills", choices=list(SKILL_SETS), default="core")
+    ap.add_argument("--extras", metavar="LIST",
+                    help="optional extra skills: 'all', 'none' (default), or a comma-separated "
+                         f"subset of: {', '.join(EXTRA_SKILLS)}")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit; write nothing")
     ap.add_argument("-y", "--yes", action="store_true", help="accept defaults, no prompts")
     ap.add_argument("--update", action="store_true", help="re-pull engine + re-copy ITS skills/hook; never touch content")
@@ -479,9 +560,13 @@ def main():
         "skills": SKILL_SETS[args.skills],
         "force_skills": args.force_skills,
         "hooks": not args.no_hooks,
+        "extra_skills": resolve_extras(args.extras),
     }
     if interactive:
+        preset_extras = cfg["extra_skills"]
         cfg = run_wizard(cfg)
+        if args.extras:            # explicit flag wins over the wizard prompt
+            cfg["extra_skills"] = preset_extras
         cfg["dry_run"] = args.dry_run
     elif not args.yes and not flags_given:
         print("non-interactive (no TTY) - using defaults")

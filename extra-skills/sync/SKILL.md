@@ -39,6 +39,36 @@ check, subfolder routing, page write with guardrails, `MEMORY.md` index line, `R
 entry). Clear cases → delegate; borderline → let `/wiki-ingest` pause and ask; nothing durable → skip.
 Don't duplicate ingestion logic here — `/wiki-ingest` is the source of truth.
 
+### Step 2b — Auto-memory harvest (gated, periodic)
+
+If your harness keeps a native auto-memory store (`<vault>/projects/<slug>/memory/`), it grows on its
+own and is separate from the global wiki (`<vault>/memory/`). Durable cross-project lessons get
+stranded there. This step is the **gated bridge** — it PROPOSES, never auto-writes.
+
+**Run it only periodically (not every `/sync`)** — roughly weekly, or when you have not harvested in a
+while. Skip silently otherwise.
+
+1. **Delta scan (cheap):** find the last harvest timestamp = date of the most recent
+   `## [YYYY-MM-DD] harvest |` entry in `<vault>/memory/log.md` (if none, use ~14 days ago). List
+   auto-memory `*.md` whose mtime is newer than that. Do not re-read the whole store.
+   ```bash
+   last=$(grep -oE '^## \[[0-9-]+\] harvest' "<vault>/memory/log.md" | tail -1 | grep -oE '[0-9-]+' || echo "")
+   find "<vault>/projects/<slug>/memory" -name '*.md' -newermt "${last:-14 days ago}"
+   ```
+2. **2-question filter** per candidate: (a) does it pass the promotion rule (validated in ≥2 separate
+   contexts, OR domain-independent)? (b) is it already covered by a wiki page (`grep` its topic in
+   `memory/MEMORY.md`)? Only survivors proceed. Skip transient/operator/state pages (session-state
+   files, live state, raw per-source notes, project-specific bug fixes).
+3. **Propose, gated:** show the user the shortlist with one-line rationales. Do NOT write anything
+   without confirmation — the promotion rule is deliberately conservative, since it is cheaper to miss
+   a lesson than to poison the wiki with one that does not generalize.
+4. **On approval:** hand each to `/wiki-ingest` (it adds a `source:` backlink to the auto-memory
+   original; leave the original in place — supersession-safe).
+5. **Record:** append one `## [YYYY-MM-DD] harvest | N promoted, M reviewed` line to `log.md` so the
+   next delta scan stays cheap.
+
+If nothing new is promote-worthy, log nothing and move on.
+
 ## Step 3 — Push the vault (concurrency-safe)
 ⚠️ If the vault is a **shared** working tree (multiple sessions and/or an auto-commit tool such as
 Obsidian-git write to it), **never `git add -A`** — it stages other writers' half-finished work and

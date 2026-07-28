@@ -12,10 +12,11 @@ model: haiku
 Steps 1–6 below are for **Windows** (TV + the MCP both run locally on Windows).
 
 **On the Ubuntu trading box (Linux):** the whole procedure reduces to one idempotent launcher —
-**`~/.openclaw/scripts/tv-cdp.sh`** (the Linux `/tv` equivalent, committed to openclaw-config). It checks
+**a small idempotent launcher script of your own** (the Linux `/tv` equivalent — keep it in your
+config repo). It checks
 CDP on :9222 and, only if it's not already up, launches `/usr/bin/tradingview --remote-debugging-port=9222`
 on `DISPLAY=:1` (shares the IBKR display); it never relaunches a live CDP session. Run it with
-`ssh ubuntu ~/.openclaw/scripts/tv-cdp.sh`.
+`ssh <box> <path-to-your-launcher>.sh`.
 
 - ⚠️ **CDP binds to 127.0.0.1**, so the `tradingview-mcp` must run **on the Ubuntu box itself**
   (`node ~/tradingview-mcp/src/server.js`, registered in that session's MCP config) — a Windows MCP can't
@@ -24,6 +25,32 @@ on `DISPLAY=:1` (shares the IBKR display); it never relaunches a live CDP sessio
   kill that TV first, then run the launcher. Full setup + activation: `docs/tradingview-ubuntu-setup.md`.
 
 ---
+
+### ⚠️ Shell context — PowerShell blocks vs the Bash tool
+
+The blocks below are **PowerShell**. If the session's shell is Git Bash (the Bash tool), they will NOT
+run as written:
+
+- Pasting them raw into Bash → `Select-Object: command not found` (exit 127).
+- Wrapping in `powershell.exe -Command "…"` → **bash expands `$null` / `$env:` / `$exePath` before
+  PowerShell sees them**. `2>$null` becomes `2>` → `Missing file specification after redirection operator`.
+- Here-strings (`@'…'@`) are forbidden in the Bash tool.
+
+**Fastest path — the bundled launcher.** Does Steps 2–4 in one shot and is a no-op if CDP is already up:
+
+```bash
+powershell.exe -ExecutionPolicy Bypass -File "$HOME/.claude/skills/tv/launch-tv.ps1"
+```
+
+Then go straight to the MCP health check step.
+
+For a one-off PowerShell snippet from Bash, **single-quote** the `-Command` string so bash leaves `$` alone:
+
+```bash
+powershell.exe -NoProfile -Command 'curl.exe -s http://localhost:9222/json/version'
+```
+
+More than one line → write a `.ps1` and run it with `-File`. Never inline.
 
 ## Step 1 — Check if already running
 

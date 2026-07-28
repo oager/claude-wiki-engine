@@ -26,6 +26,7 @@ python3 install.py --into-repo /path/to/repo    # vendor the engine into a share
 python3 install.py --content-repo <git-url>     # clone a repo to BE your memory dir
 python3 install.py --mode symlink               # link skills (auto-update); falls back to copy
 python3 install.py --force-skills               # replace existing skills (backs up first); default skips them
+python3 install.py --extras all                 # also install the optional workflow skills (see below)
 python3 install.py --no-hooks                   # skip the wiki-index-check hook
 python3 install.py --no-claude-md               # skip the CLAUDE.md policy block
 python3 install.py --dry-run                     # print the plan, write nothing
@@ -35,6 +36,7 @@ python3 install.py --update                       # re-pull engine + re-copy ITS
 
 ## What it installs
 - `skills/wiki-ingest`, `skills/wiki-sync`, `skills/doc-review` → `<config>/skills/` — **only if absent**
+- `extra-skills/*` → `<config>/skills/` — **opt-in only** (wizard step 6, or `--extras`); never installed by default
   (an existing skill may come from a plugin like **ECC** or be your own; the installer won't overwrite it).
 - `hooks/wiki-index-check.cjs` (`PostToolUse`, non-blocking "this page isn't in MEMORY.md" reminder)
   and `hooks/wiki-sync-nudge.cjs` (`Stop`, a once-per-session nudge to run `/wiki-sync` before wrapping
@@ -46,6 +48,52 @@ python3 install.py --update                       # re-pull engine + re-copy ITS
   **the wiki is tracked**, only `raw/*` (the unprocessed inbox) is ignored, and `raw/README.md` +
   `raw/archive/` (ingested originals) are kept.
 - a reversible ingestion-policy block in `<config>/CLAUDE.md` (between `<!-- wiki-engine:start/end -->` sentinels).
+
+## Optional extra skills
+
+Beyond the wiki engine itself, the repo ships a set of **optional workflow skills** in
+`extra-skills/`. They are independent of the wiki — install any, all, or none. Nothing is installed
+unless you ask for it, and an existing skill of the same name is never overwritten.
+
+| Skill | What it does |
+|---|---|
+| `error-harden` | Post-bugfix checklist: enumerate failure modes, auto-handle them, add alerting, write it down |
+| `karpathy-guidelines` | Behavioural guardrails against common LLM coding mistakes (overcomplication, silent assumptions, unverifiable success criteria) |
+| `preflight` | Session startup: sync the vault, load memory, orient on project state, brief in 10-15 lines. Read-only |
+| `recap` | Generate a paste-ready handoff doc for another session or another machine |
+| `regression` | Run the project's regression suite and block on failure |
+| `ripple` | Consumer-impact sweep when data or interfaces change: what downstream breaks, goes stale, or could benefit |
+| `sync` | End-of-session ritual: update memory, promote durable findings to the wiki, push the vault safely |
+| `tiered-build` | Three-model build pipeline with hard gates between design, spec, and implementation |
+| `tv` | Launch TradingView with a CDP debugging port for chart automation |
+
+`preflight` and `sync` are the natural bookends to a session and pair with the wiki: `sync` promotes
+durable findings into it, `preflight` reads the index back at startup.
+
+### Installing extras
+
+The wizard asks (step 6 of 6). You can enter numbers, names, `all`, or `none`:
+
+```
+[6/6] Optional extra skills - independent of the wiki engine, install any or none:
+   1) error-harden         Post-bugfix checklist: enumerate failure modes, auto-handle, alert, document
+   2) karpathy-guidelines  Behavioural guardrails against common LLM coding mistakes
+   ...
+  Enter numbers or names (comma/space separated), 'all', or 'none'.
+Extras [none] > 1 3 sync
+```
+
+Non-interactively:
+
+```bash
+python3 install.py --extras all
+python3 install.py --extras preflight,sync,ripple
+python3 install.py --extras none          # the default
+```
+
+Same safety rules as the core skills: existing skills are skipped rather than overwritten
+(`--force-skills` replaces them, backing up first), and `--mode symlink` links them so they
+auto-update with the repo.
 
 ## How it adapts (no hardcoding)
 The installer resolves symlinks and writes to the **real** target, so it fits any layout — a personal
@@ -86,4 +134,4 @@ run, repeat/idempotent calls don't clobber it, and unrelated user keys are prese
 - The `wiki-index-check` hook is **config-adaptive**: it finds the wiki by the nearest `MEMORY.md`
   above the written file, so it works for a global `~/.claude/memory`, a repo-vendored wiki, a
   project-scoped `.claude/projects/<slug>/memory`, or any custom `--memory` path — no fixed location.
-- Roadmap: submodule mode; optional extra skills (dictionary / postmortem).
+- Roadmap: submodule mode; more optional skills (dictionary / postmortem).
