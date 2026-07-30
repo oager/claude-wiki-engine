@@ -106,7 +106,7 @@ if ($exePath) { Write-Host "Resolved: $exePath" }
 else { Write-Host "NOT FOUND" }
 ```
 
-- If it prints `Resolved: <path>` → use `$exePath` in Step 3 (the variable persists in the same shell, but Step 3 re-resolves so it's safe to run standalone).
+- If it prints `Resolved: <path>` → TradingView is installed; go to Step 3. Treat the path as **diagnostic only** — don't carry `$exePath` forward. Step 3 re-resolves and picks its own MSIX-vs-classic branch, and on an MSIX install the launch target is a `shell:AppsFolder\…` activation string rather than that path.
 - If it prints `NOT FOUND` → TradingView Desktop is not installed, or installed somewhere unusual. Tell the user: "Couldn't locate TradingView Desktop. Make sure it's installed, then launch it manually once so Windows registers it."
 
 ## Step 3 — Launch
