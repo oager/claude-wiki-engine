@@ -115,14 +115,29 @@ Re-resolve and launch in one block so the step is self-contained (no dependency 
 
 ```powershell
 $pkg = Get-AppxPackage | Where-Object { $_.Name -like "*TradingView*" } | Select-Object -First 1
-$exePath = if ($pkg) { "$($pkg.InstallLocation)\TradingView.exe" } else {
-    @("$env:LOCALAPPDATA\Programs\TradingView\TradingView.exe","$env:ProgramFiles\TradingView\TradingView.exe") |
+if ($pkg) {
+    # MSIX/Store install (the winget default). The exe sits under ACL-protected
+    # Program Files\WindowsApps\, so Start-Process on that PATH is Access-Denied from a
+    # restricted / packaged-app container token, and Invoke-CommandInDesktopPackage silently
+    # no-ops. shell:AppsFolder activation works on both token types AND passes -ArgumentList.
+    $appId  = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id | Select-Object -First 1
+    $target = "shell:AppsFolder\$($pkg.PackageFamilyName)!$appId"
+    Start-Process $target -ArgumentList "--remote-debugging-port=9222"
+} else {
+    $exePath = @("$env:LOCALAPPDATA\Programs\TradingView\TradingView.exe","$env:ProgramFiles\TradingView\TradingView.exe") |
         Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $exePath) { throw "TradingView Desktop not found. Install it, then launch it once manually." }
+    Start-Process $exePath -ArgumentList "--remote-debugging-port=9222"
 }
-Start-Process $exePath -ArgumentList "--remote-debugging-port=9222"
 ```
 
-If you already have a valid `$exePath` from Step 2 in the same shell, just run the `Start-Process` line.
+⚠️ **Do not "simplify" this back to a single `Start-Process $exePath`.** For an MSIX install that
+is the Access-Denied path — it may appear to work interactively (normal user token) and then fail
+from an agent shell. Gate on whether the `Get-AppxPackage` branch matched, as above.
+
+Run the whole block — don't shortcut to a bare `Start-Process` using a `$exePath` left over from
+Step 2. On an MSIX install the launch target is a `shell:AppsFolder\…` activation string, not
+`$exePath` at all, so the block has to pick the branch itself.
 
 ## Step 4 — Wait and verify
 
