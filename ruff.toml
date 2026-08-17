@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+# Mechanical, low-risk rules only: pyflakes/pycodestyle errors, import sorting,
+# pyupgrade. Behavioural rules are deliberately left out -- e.g. BLE001 would
+# flag the blind `except Exception` in merge_hook(), which is intentional:
+# it must never risk corrupting an unreadable or locked settings.json.
+# Same rule set as oager/walkforward-engine, so one habit covers both repos.
+select = ["E4", "E7", "E9", "F", "I", "UP"]
