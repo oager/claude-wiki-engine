@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests
+        run: python -m unittest discover tests -v
+
+      - name: Installer dry-run
+        # --dry-run prints the plan and writes nothing; --into-repo keeps it off
+        # ~/.claude even if that ever regressed. Exercises the real planning path
+        # (seeds, hook wiring, CLAUDE.md edit), so an import or logic error in
+        # install.py fails here rather than on a user's first install.
+        run: python install.py --dry-run -y --into-repo "$(mktemp -d)"
