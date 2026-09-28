@@ -14,6 +14,10 @@ from pathlib import Path
 import lib
 
 SHELLS = {"bash", "sh", "zsh", "fish", "dash", "pwsh", "powershell", "cmd"}
+# Windows launches a stdio MCP server as `cmd /c npx ...`, so its first hop from Claude is `cmd` -- unlike the
+# Bash tool, whose first hop is `bash` on every OS, never `cmd`. Used ONLY for the _harness_child first-hop test;
+# SHELLS stays as is everywhere else (a `cmd` process itself is still never reported).
+TOOL_SHELLS = SHELLS - {"cmd"}
 _CLAUDE_BIN = re.compile(r"^(claude|\d+\.\d+\.\d+)$")  # native installs run versions/<ver>
 # General runtimes: an npm install's EXECPATH may be `node`, and counting every node process as Claude would hide
 # a node dev server (a false clean close). Such an install is then unrecognized and reported "unchecked".
@@ -151,7 +155,7 @@ def _harness_child(by, pid):
         seen.add(pid)
         r = by[pid]
         if is_claude(r["comm"]):
-            return bool(chain) and chain[-1] not in SHELLS
+            return bool(chain) and chain[-1] not in TOOL_SHELLS
         chain.append(r["comm"])
         pid = r["ppid"]
     return False
@@ -173,6 +177,29 @@ def _ancestor_pids(by, pid):
         seen.add(p)
         yield p
         p = by[p]["ppid"]
+
+
+def linux_chain(pid, proc=Path("/proc")):
+    """pid and its ancestors via /proc (Linux), stopping at init, a missing entry or a cycle."""
+    out, seen = [], set()
+    while isinstance(pid, int) and pid > 1 and pid not in seen:
+        seen.add(pid)
+        out.append(pid)
+        try:
+            pid = proc_stat(proc, pid)[1]
+        except (OSError, ValueError, IndexError):
+            break
+    return out
+
+
+def linux_related(pid, pids, proc=Path("/proc")):
+    """True when pid is one of pids, an ancestor of one (a launcher above a registered CLAUDE_PID), or a descendant."""
+    pids = set(pids)
+    if not pids:
+        return False
+    if set(linux_chain(pid, proc)) & pids:
+        return True
+    return any(pid in linux_chain(p, proc) for p in pids)
 
 
 def running_in(root, rows, my_pid):

@@ -69,13 +69,47 @@ def test_cc_version_relaunch(tmp_path, monkeypatch):
     (bindir / "claude").symlink_to(vers / "2.1.283")
     monkeypatch.setenv("PATH", str(bindir))
     monkeypatch.setenv("CLAUDE_CODE_EXECPATH", str(vers / "2.1.282"))
-    assert op.cc_version() == {"running": "2.1.282", "installed": "2.1.283", "relaunch_needed": True}
+    assert op.cc_version() == {"running": "2.1.282", "installed": "2.1.283",
+                               "relaunch_needed": True, "channel_differs": False}
 
 
 def test_cc_version_unknown(monkeypatch, tmp_path):
     monkeypatch.delenv("CLAUDE_CODE_EXECPATH", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert op.cc_version() == {"running": None, "installed": None, "relaunch_needed": False}
+    assert op.cc_version() == {"running": None, "installed": None,
+                               "relaunch_needed": False, "channel_differs": False}
+
+
+# Task W (2026-09-28): the npm shim on PATH can be OLDER than the running desktop app (a downgrade on
+# PATH, e.g. Windows) -- that must never set relaunch_needed; it sets channel_differs instead.
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks; Windows Git Bash usually cannot create them")
+def test_cc_version_channel_differs_on_downgrade(tmp_path, monkeypatch):
+    vers = tmp_path / "versions"
+    vers.mkdir()
+    (vers / "2.1.217").write_text("#!/bin/sh\n", encoding="utf-8")
+    (vers / "2.1.217").chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "claude").symlink_to(vers / "2.1.217")
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.setenv("CLAUDE_CODE_EXECPATH", str(vers / "2.1.281"))
+    assert op.cc_version() == {"running": "2.1.281", "installed": "2.1.217",
+                               "relaunch_needed": False, "channel_differs": True}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks; Windows Git Bash usually cannot create them")
+def test_cc_version_equal_is_neither(tmp_path, monkeypatch):
+    vers = tmp_path / "versions"
+    vers.mkdir()
+    (vers / "2.1.283").write_text("#!/bin/sh\n", encoding="utf-8")
+    (vers / "2.1.283").chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "claude").symlink_to(vers / "2.1.283")
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.setenv("CLAUDE_CODE_EXECPATH", str(vers / "2.1.283"))
+    assert op.cc_version() == {"running": "2.1.283", "installed": "2.1.283",
+                               "relaunch_needed": False, "channel_differs": False}
 
 
 def test_plugin_updates(vault):
@@ -112,4 +146,5 @@ def test_cc_version_installed_from_shim(monkeypatch, tmp_path):
     shim.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setenv("CLAUDE_CODE_EXECPATH", str(tmp_path / "claude-code" / "2.1.281" / "claude.exe"))
-    assert op.cc_version() == {"running": "2.1.281", "installed": "2.1.283", "relaunch_needed": True}
+    assert op.cc_version() == {"running": "2.1.281", "installed": "2.1.283",
+                               "relaunch_needed": True, "channel_differs": False}

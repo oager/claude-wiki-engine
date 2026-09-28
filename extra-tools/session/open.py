@@ -21,6 +21,7 @@ import inbox  # noqa: E402
 import lib  # noqa: E402
 import procs  # noqa: E402
 import repohandoff  # noqa: E402
+import sessions  # noqa: E402
 
 UNMERGED = {"UU", "AA", "UD", "DU", "DD", "AU", "UA"}
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
@@ -82,8 +83,14 @@ def _version_in_path(p):
     return next((part for part in (p.name, p.parent.name) if _VERSION.match(part)), None)
 
 
+def _vtuple(v):
+    return tuple(int(x) for x in v.split(".")) if v else None
+
+
 def cc_version():
-    """The running session keeps the binary it launched with; `claude update` only changes the installed one."""
+    """The running session keeps the binary it launched with; `claude update` only changes the installed one.
+    On Windows the npm shim first on PATH can be OLDER than the running desktop app (a downgrade); that must
+    never trigger a relaunch -- it is reported as channel_differs instead."""
     run_path = os.environ.get("CLAUDE_CODE_EXECPATH")
     running = _version_in_path(run_path) if run_path else None
     which = shutil.which("claude")
@@ -92,8 +99,10 @@ def cc_version():
         rc, out, _ = lib.RUN([which, "--version"], timeout=5)
         m = re.match(r"\s*(\d+\.\d+\.\d+)", out or "")
         installed = m.group(1) if rc == 0 and m else None
+    run_t, inst_t = _vtuple(running), _vtuple(installed)
     return {"running": running, "installed": installed,
-            "relaunch_needed": bool(running and installed and running != installed)}
+            "relaunch_needed": bool(run_t and inst_t and inst_t > run_t),
+            "channel_differs": bool(run_t and inst_t and inst_t < run_t)}
 
 
 def plugin_updates():
@@ -164,6 +173,25 @@ def collab_block(root, meta, ids, profile):
                      if "\t" in line and not lib.is_self(*line.split("\t", 1), ids))
     return {"since": basis, "shared": bool(profile.get("shared")),
             "others": [{"author": a, "commits": n} for a, n in others.most_common()]}
+
+
+def session_block(key, root, updated):
+    """Register this session (local, never committed) and list the other live sessions of this project."""
+    res = {"me": None, "others": [], "unregistered": []}
+    m = sessions.me()
+    if m:
+        r = sessions.register(key, root, updated)
+        res["me"] = m[0][:8]
+        if not r["registered"]:
+            res["reason"] = r["reason"]
+    else:
+        res["reason"] = "no session id"
+    res["others"] = sessions.others(key)
+    scan = procs.claude_sessions_in(root)  # Linux only: Claude processes in this folder, registered or not
+    if scan is not None:
+        known = [o["pid"] for o in res["others"]]
+        res["unregistered"] = [s["pid"] for s in scan if not procs.linux_related(s["pid"], known)]
+    return res
 
 
 # --- type detection ------------------------------------------------------------------
@@ -438,9 +466,8 @@ def collect(cwd, project=None):
                                {"exists": None, "reason": "origin unreachable; repo handoff not read"})
     out["type"] = detect_type(root, meta)
     out["checks"] = run_checks(out["type"]["type"], root, profile, ids)
-    sessions = procs.claude_sessions_in(root)
-    if sessions is not None:
-        out["concurrent"] = sessions
+    out["sessions"] = session_block(ident["key"], root, meta.get("updated"))
+    out["concurrent"] = out["sessions"]["others"]  # alias kept for one release
     return out
 
 

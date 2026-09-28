@@ -71,6 +71,8 @@ def mark_done(paths):
             raise ValueError(f"not an inbox note: {p}")
     staged = []
     for p in notes:
+        if not p.exists():
+            continue  # another session already triaged it
         dst, n = p.parent / "done" / p.name, 2
         while dst.exists():
             dst, n = p.parent / "done" / f"{p.stem}-{n}{p.suffix}", n + 1

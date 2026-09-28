@@ -15,7 +15,7 @@ Update all persistent memory and status files for the current project, then push
 python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
 ```
 
-One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `legacy`, `git {dirty,
+One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `sessions`, `updated_seen`, `legacy`, `git {dirty,
 dirty_count, unpushed, no_pr_branches, ci_pending}`, `running {supported, procs, via, reason}`, `drift`,
 `inbox_untriaged`, `inbox_notes`, `repo_handoff`, `repo_sha`, `vault_sha`.
 `identity.how == "ambiguous"` →
@@ -27,11 +27,13 @@ push, which is exactly what the next `/preflight` diffs from.
 A clean close = the next session can start from the handoff alone, with nothing hidden in git, in running processes
 or in the inbox.
 
-**Concurrent /sync:** before writing, compare Step 0's `handoff_updated` (the handoff's frontmatter `updated` as
-close.py read it) with `handoff.updated` from this session's `/preflight` (or its first read of the handoff). If they
-differ, another session synced in between: **merge** — keep their new
-Next up, Open items and Standing notes, add this session's, re-rank — never rewrite over them, and say
-`merged with a concurrent /sync (<updated_by>)` in the report.
+**Concurrent /sync:** compare `updated_seen` (the handoff version this session last read or wrote) with
+`handoff_updated` (the version on disk now), both from Step 0. Different → another session synced since this one last
+looked: **merge** — keep their new Next up, Open items and Standing notes, add this session's, re-rank — never
+rewrite over them, and say `merged with a concurrent /sync (<updated_by>)` in the report. `updated_seen` null (no
+session id) → fall back to the value you read at `/preflight`.
+**Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
+session's focus) and leave items in other lanes untouched.
 
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
 it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and
@@ -41,7 +43,7 @@ Standing notes. Leave the legacy file where it is.
 | Section | Rule |
 |---|---|
 | Next up | **Rewrite.** Max 5, ranked; item 1 = where the next session starts. From this session's work, the previous Next up and Open items. |
-| Warnings | **Rewrite LAST**, after Steps 1a–1d (trim, inbox triage, repo handoff, proposals), because their results feed it. From Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no process probe on this platform, or the probe failed; `running.reason` says which) → write `running work unchecked (<reason>)`, never `none`; likewise `git.error` → `PR state unchecked`. Untriaged notes = `inbox_notes` minus the notes Step 1b moved; any left → `N inbox notes untriaged`. From Step 1c's result: `ignored: true` → `repo handoff is gitignored (.claude/ ignored) — collaborators can't see it`; `uncommitted: true` → `repo handoff not committed`. Nothing → `none` (= clean close). |
+| Warnings | **Rewrite LAST**, after Steps 1a–1d (trim, inbox triage, repo handoff, proposals), because their results feed it. From Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no process probe on this platform, or the probe failed; `running.reason` says which) → write `running work unchecked (<reason>)`, never `none`; likewise `git.error` → `PR state unchecked`. Untriaged notes = `inbox_notes` minus the notes Step 1b moved; any left → `N inbox notes untriaged`. From Step 1c's result: `ignored: true` → `repo handoff is gitignored (.claude/ ignored) — collaborators can't see it`; `uncommitted: true` → `repo handoff not committed`. Nothing → `none` (= clean close). `running.others_procs` → Current state as `other session's work (<focus>)`, not Warnings. While `sessions.others` is non-empty, add one Warnings line: `another session is active here — dirty files may be theirs; commit only files you changed`. |
 | Current state | **Rewrite:** live / deployed state and repo state. `running.via == "cmdline"` (Windows and macOS match the project path in command lines, weaker evidence than the Linux `/proc` probe) with empty `running.procs` → add `running work: none found (command-line match)` here, not under Warnings: it does not block a clean close. |
 | Open items | Add new, remove done. |
 | Profile | Add checks this session verified (preflight's `guessed` / `unknown` candidates that proved right, real unit names, health URLs, queue files, `deploys_from_repo`). List every Profile change in the Step 5 report. |
@@ -72,6 +74,7 @@ move the triaged notes and add every path the command prints under `stage` to th
 ```bash
 python3 ~/.claude/tools/session/close.py inbox-done --files <note paths…>
 ```
+Notes listed under `already_done` were triaged by another session: nothing to do.
 Notes left untouched stay and appear under Warnings.
 
 ### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
@@ -210,6 +213,14 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 **Never commit a shared index line that points at a file you are not committing.** `memory/MEMORY.md` and
 `memory/log.md` are written by every session; if another session's new page is still untracked, leave the shared
 file unstaged and let the owning session's commit carry both.
+
+### Step 3b — Refresh this session's registry entry
+
+```bash
+python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh
+```
+It records the handoff version this session just wrote, so a later concurrent /sync is detected; it is local and
+never committed.
 
 ## Step 4 — "and ship" (only when explicitly requested)
 

@@ -110,3 +110,10 @@ def fake(monkeypatch):
     monkeypatch.setattr(lib, "RUN", f)
     monkeypatch.setattr(lib, "has_systemctl", lambda: True)  # unit-guessing tests must not depend on the host OS
     return f
+
+
+@pytest.fixture(autouse=True)
+def _no_session_env(monkeypatch):
+    """Tests run inside Claude sessions; never let them register the real session anywhere."""
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_PID", raising=False)

@@ -55,6 +55,34 @@ def test_running_in_reports_relative_arg_job_under_session_claude():
     assert 40 not in pids  # MCP-like row under claude (pid 20), first hop not a shell: still a harness child
 
 
+def test_running_in_excludes_cmd_launched_mcp_chain_windows():
+    # Task W / note 2026-09-28T1353Z-windows-acceptance: stdio MCP servers on Windows launch as
+    # `cmd /c npx ...`, so their first hop from Claude is `cmd` -- previously in SHELLS, so
+    # _harness_child returned False and the node descendants got reported as running work "by
+    # descent". Only J (a real Bash-tool job through bash/bash) must be reported.
+    root = "C:\\Users\\a\\proj"
+    rows = [
+        {"pid": 52596, "ppid": 41936, "comm": "claude", "cmdline": "claude"},
+        {"pid": 41936, "ppid": 1, "comm": "claude", "cmdline": "claude"},
+        {"pid": 47516, "ppid": 52596, "comm": "cmd", "cmdline": "cmd /c npx chrome-devtools-mcp"},
+        {"pid": 38896, "ppid": 47516, "comm": "node", "cmdline": "node C:\\npm\\chrome-devtools-mcp"},
+        {"pid": 24788, "ppid": 38896, "comm": "cmd", "cmdline": "cmd /c npx foo-mcp"},
+        {"pid": 73712, "ppid": 24788, "comm": "node", "cmdline": "node C:\\npm\\foo-mcp"},
+        {"pid": 30524, "ppid": 73712, "comm": "node", "cmdline": "node C:\\npm\\foo-mcp-child"},
+        {"pid": 200, "ppid": 52596, "comm": "bash", "cmdline": "bash"},
+        {"pid": 201, "ppid": 200, "comm": "bash", "cmdline": "bash"},
+        {"pid": ME, "ppid": 201, "comm": "python", "cmdline": "python close.py"},
+        {"pid": 210, "ppid": 201, "comm": "node", "cmdline": f"node {root}\\server.js"},  # real Bash-tool job
+    ]
+    assert [p["pid"] for p in procs.running_in(root, rows, ME)] == [210]
+
+
+def test_tool_shells_excludes_cmd_but_keeps_other_shells():
+    assert "cmd" not in procs.TOOL_SHELLS
+    assert procs.TOOL_SHELLS == procs.SHELLS - {"cmd"}
+    assert "cmd" in procs.SHELLS  # a cmd process itself is still never reported
+
+
 def test_parse_cim_list_and_single():
     one = '{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null}'
     assert procs.parse_cim(one) == [{"pid": 4, "ppid": 0, "comm": "system", "cmdline": ""}]
@@ -109,7 +137,7 @@ def test_running_work_probe_unrecognized_claude_is_unchecked(tmp_path, monkeypat
 def test_running_work_probe_failure_passes_reason(tmp_path):
     res = cl.running_work(ROOT, proc=tmp_path / "noproc",
                           probe=lambda: {"supported": False, "procs": [], "reason": "process probe failed (rc=1)"})
-    assert res == {"supported": False, "procs": [], "reason": "process probe failed (rc=1)"}
+    assert res == {"supported": False, "procs": [], "others_procs": [], "reason": "process probe failed (rc=1)"}
 
 
 def test_is_claude_windows_execpath(monkeypatch):

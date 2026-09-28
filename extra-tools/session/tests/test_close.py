@@ -53,7 +53,7 @@ def test_running_work_same_cgroup_is_reported(repo):
 
 
 def test_running_work_unsupported(tmp_path):
-    assert cl.running_work(tmp_path, proc=tmp_path / "noproc") == {"supported": False, "procs": []}
+    assert cl.running_work(tmp_path, proc=tmp_path / "noproc") == {"supported": False, "procs": [], "others_procs": []}
 
 
 def test_deploy_drift(repo, fake):

@@ -7,6 +7,8 @@
     close.py note --to K --from F --subject S [--file P]   write + push a vault inbox note
     close.py inbox-done --files P...           move triaged inbox notes to done/ (stage, don't push)
     close.py repo-handoff                      write <repo>/.claude/HANDOFF.md (shared projects, leak-guarded)
+    close.py session focus "<text>"            set this session's registry focus text
+    close.py session refresh                   re-register this session in the live registry
 
 Always exits 0 and prints one JSON object. Design: the "Session handoff" section of the claude-wiki-engine README.
 """
@@ -25,7 +27,11 @@ import leakguard  # noqa: E402
 import lib  # noqa: E402
 import procs  # noqa: E402
 import repohandoff  # noqa: E402
-from procs import SHELLS  # noqa: E402
+import sessions  # noqa: E402
+from procs import (  # noqa: E402
+    SHELLS,
+    TOOL_SHELLS,
+)
 from procs import ancestors as _ancestors
 from procs import is_claude as _is_claude
 from procs import proc_stat as _stat
@@ -83,13 +89,29 @@ def _harness_child(proc, pid):
         except (OSError, ValueError, IndexError):
             return False
         if _is_claude(comm):
-            return bool(chain) and chain[-1] not in SHELLS
+            return bool(chain) and chain[-1] not in TOOL_SHELLS
         chain.append(comm)
         pid = ppid
     return False
 
 
-def running_work(root, proc=Path("/proc"), probe=None):
+def _split_others(res, other_pids, chain):
+    """Processes started by another live session are that session's work, not this one's leftovers."""
+    res["others_procs"] = []
+    if not other_pids:
+        return res
+    mine = []
+    for p in res["procs"]:
+        owner = next((other_pids[a] for a in chain(p["pid"]) if a in other_pids), None)
+        if owner is None:
+            mine.append(p)
+        else:
+            res["others_procs"].append({**p, "session": owner.get("id"), "focus": owner.get("focus", "")})
+    res["procs"] = mine
+    return res
+
+
+def running_work(root, proc=Path("/proc"), probe=None, other_pids=None):
     """Processes working inside the repo that no systemd unit manages (dev servers, stray jobs).
 
     A process in ANOTHER .service cgroup is managed (e.g. webapp-dashboard). One in OUR cgroup is
@@ -98,18 +120,20 @@ def running_work(root, proc=Path("/proc"), probe=None):
     """
     if not proc.is_dir():
         if probe is None and proc != Path("/proc"):
-            return {"supported": False, "procs": []}  # a test's missing fake /proc
+            return {"supported": False, "procs": [], "others_procs": []}  # a test's missing fake /proc
         t = (probe or procs.table)()  # Windows / macOS: match the project path in command lines
         if not t["supported"]:
-            return {"supported": False, "procs": [], "reason": t.get("reason", "no process probe")}
+            return {"supported": False, "procs": [], "others_procs": [], "reason": t.get("reason", "no process probe")}
         rows = t["procs"]
         if os.environ.get("CLAUDE_CODE_EXECPATH") and not any(map(_is_claude, procs.chain_comms(rows, os.getpid()))):
-            return {"supported": False, "procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
-        return {"supported": True, "procs": procs.running_in(root, rows, os.getpid()), "via": "cmdline"}
+            return {"supported": False, "procs": [], "others_procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
+        by = {r["pid"]: r for r in rows}
+        return _split_others({"supported": True, "procs": procs.running_in(root, rows, os.getpid()), "via": "cmdline"},
+                             other_pids, lambda pid: list(procs._ancestor_pids(by, pid)))
     # Under Claude but no ancestor looks like Claude: its process naming changed again, and the harness filter
     # would silently drop every Bash-tool job. Report "unchecked" rather than a false "nothing running".
     if proc == Path("/proc") and os.environ.get("CLAUDE_CODE_EXECPATH") and not any(map(_is_claude, _self_chain())):
-        return {"supported": False, "procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
+        return {"supported": False, "procs": [], "others_procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
     root = os.path.realpath(root)
     mine = _ancestors()
     try:
@@ -132,7 +156,7 @@ def running_work(root, proc=Path("/proc"), probe=None):
         if (cg.endswith(".service") and cg != my_cg) or comm in SKIP_COMM or _is_claude(comm) or _harness_child(proc, int(d.name)):
             continue
         found.append({"pid": int(d.name), "cmd": cmd[:160]})
-    return {"supported": True, "procs": found}
+    return _split_others({"supported": True, "procs": found}, other_pids, lambda pid: procs.linux_chain(pid, proc))
 
 
 def deploy_drift(root, profile, ids):
@@ -168,14 +192,18 @@ def collect_close(cwd, project=None):
     root = ident["root"]
     is_repo = lib.git(root, "rev-parse", "--git-dir") is not None
     notes = inbox.list_notes(ident["key"]) + inbox.list_notes("_user")
+    others = sessions.others(ident["key"])
+    m = sessions.me()
     return {
         "identity": ident,
+        "sessions": {"me": m[0][:8] if m else None, "others": others},
+        "updated_seen": sessions.seen(ident["key"]),  # the handoff 'updated' this session last read or wrote
         "handoff": {"path": str(p), "exists": p.is_file(),
                     "size_kb": round(p.stat().st_size / 1024, 1) if p.is_file() else 0},
         "handoff_updated": h["meta"].get("updated"),  # the concurrent-merge check compares this with /preflight's
         "legacy": None if p.is_file() else lib.find_legacy(root, cwd),
         "git": git_close(root, profile.get("gh") or ident["repo"]) if is_repo else None,
-        "running": running_work(root),
+        "running": running_work(root, other_pids={o["pid"]: o for o in others}),
         "drift": deploy_drift(root, profile, ids) if is_repo else [],
         "repo_handoff": ({"uncommitted": bool(lib.git(root, "status", "--porcelain", "--", repohandoff.REL))}
                          if profile.get("shared") and is_repo else None),
@@ -267,6 +295,7 @@ def push(files, message, retries=15):
             return lib.RUN(["git", "-C", str(v), *args], timeout=t)
 
         rel = asked = [Path(f).resolve().relative_to(v).as_posix() for f in files]
+        rel = [r for r in rel if not r.startswith("handoffs/.live/")]  # the session registry is per machine: never committed
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
         rel = [r for r in rel if (v / r).exists() or g("ls-files", "--error-unmatch", "--", r)[0] == 0]
         dropped = [r for r in asked if r not in rel]  # never merged into `missing`: /sync retries on `missing`
@@ -339,6 +368,17 @@ def write_repo_handoff(cwd, project=None):
     return res
 
 
+def session_cmd(cwd, project, action, text):
+    ident = lib.resolve_identity(cwd, project)
+    if not ident.get("key"):
+        return {"ok": False, "reason": "ambiguous project; pass --project"}
+    if action == "focus":
+        return sessions.set_focus(ident["key"], text)
+    p = lib.handoff_path(ident["key"])
+    updated = lib.parse_handoff(p.read_text(encoding="utf-8"))["meta"].get("updated") if p.is_file() else None
+    return sessions.register(ident["key"], ident["root"], updated)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="/sync collector")
     ap.add_argument("--cwd", default=os.getcwd())
@@ -357,6 +397,9 @@ def main(argv=None):
     d = sub.add_parser("inbox-done")
     d.add_argument("--files", nargs="+", required=True)
     sub.add_parser("repo-handoff")
+    se = sub.add_parser("session")
+    se.add_argument("action", choices=["focus", "refresh"])
+    se.add_argument("text", nargs="?", default="")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "trim":
@@ -372,9 +415,14 @@ def main(argv=None):
             p = inbox.write_note(a.to, a.from_, a.subject, body)
             res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
         elif a.cmd == "inbox-done":
-            res = {"moved": len(a.files), "stage": inbox.mark_done(a.files)}
+            staged = inbox.mark_done(a.files)
+            moved = set(staged[0::2])
+            res = {"moved": len(moved), "stage": staged,
+                   "already_done": [f for f in a.files if str(Path(f)) not in moved]}
         elif a.cmd == "repo-handoff":
             res = write_repo_handoff(a.cwd, a.project)
+        elif a.cmd == "session":
+            res = session_cmd(a.cwd, a.project, a.action, a.text)
         else:
             res = collect_close(a.cwd, a.project)
     except Exception as e:  # /sync must still be able to report: surface the failure as data

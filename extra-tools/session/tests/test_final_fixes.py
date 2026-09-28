@@ -79,7 +79,7 @@ def test_repo_handoff_cli_refuses_without_identity(vault, repo, capsys):
 def test_inbox_done_cli_shape(vault, capsys):
     p = inbox.write_note("k", "s", "one", "b")
     cl.main(["inbox-done", "--files", str(p)])
-    assert _out(capsys) == {"moved": 1, "stage": [str(p), str(p.parent / "done" / p.name)]}
+    assert _out(capsys) == {"moved": 1, "stage": [str(p), str(p.parent / "done" / p.name)], "already_done": []}
 
 
 def test_note_stdin_is_read_as_utf8(vault, pushable, monkeypatch, capsys):  # noqa: F811

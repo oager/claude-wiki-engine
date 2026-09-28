@@ -1,6 +1,5 @@
 # ~/.claude/tools/session/tests/test_collect.py
 import json
-import os
 
 import open as op
 from conftest import SAMPLE_HANDOFF, _init, commit, sh
@@ -10,9 +9,8 @@ def test_collect_end_to_end(repo, vault, fake):
     (vault / "handoffs").mkdir()
     (vault / "handoffs/alice-demo-proj.md").write_text(SAMPLE_HANDOFF, encoding="utf-8")
     res = op.collect(repo)
-    expected = {"identity", "handoff", "inbox", "global", "git", "collab", "type", "checks"}
-    if os.path.isdir("/proc"):  # Linux: concurrent sessions field is included
-        expected.add("concurrent")
+    expected = {"identity", "handoff", "inbox", "global", "git", "collab", "type", "checks",
+                "sessions", "concurrent"}
     assert set(res) == expected
     assert res["handoff"]["exists"] is True
     assert res["handoff"]["next_up"] == "1. Ship the thing"

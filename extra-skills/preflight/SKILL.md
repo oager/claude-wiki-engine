@@ -16,7 +16,7 @@ Design: the "Session handoff" section of the claude-wiki-engine README.
 python3 ~/.claude/tools/session/open.py --cwd "$PWD"     # Windows Git Bash: python
 ```
 
-One JSON object: `identity`, `handoff`, `global`, `inbox`, `git`, `collab`, `repo_handoff`, `concurrent`, `type`,
+One JSON object: `identity`, `handoff`, `global`, `inbox`, `git`, `collab`, `repo_handoff`, `sessions`, `type`,
 `checks`. It always exits 0; a failed
 check says so in its own entry. **Never re-derive a fact it returned**: no hand-probing unit names, no re-running
 git status.
@@ -73,8 +73,12 @@ they keep in the repo. Summarize what changed under you.
   raised false outage alarms before).
 - A port-serving process is alive when its port is (a `port` check), not when `pgrep` finds it.
 - `global.user.profile_error` set: `User profile broken: <error>` on the Health line; user checks were skipped.
-- `concurrent` non-empty: `⚠ Also open here: N other Claude session(s)` on the Health line. Two sessions syncing one
-  project must merge, not overwrite (the /sync concurrent rule).
+- `sessions.others` non-empty: `⚠ Also open here: N session(s) — <id> (<focus or "no focus">), …` on the Health line.
+  `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`. When other
+  sessions exist and this one has no focus yet, take a one-line focus from the user's request (or ask for one) and run
+  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When they exist, list this
+  session's lane (`[<focus>]` items) first in Next up.
+- `sessions.reason` set (no session id / registry not writable): one line on the Health line; the rest works as before.
 
 ## Step 6: Trading type only
 
@@ -112,6 +116,8 @@ Start on #1?
   merge by resolving the offending file and `git commit --no-edit`. Never `reset --hard` or `push --force` the vault.
 - `global.claude_code.relaunch_needed`: "relaunch to pick up <installed>". The running session keeps the binary it
   started with; `claude update` changes only the installed one.
+- `global.claude_code.channel_differs`: an older copy of Claude Code is first on PATH; mention it once, never
+  suggest relaunching into it.
 - `global.clock.ntp_synced` false: say which clock the briefing is dated from.
 - `git.error` set (gh missing or not logged in): PRs and issues are **unknown**, never "0 PRs".
 - `git` null (the project folder is not a repo, e.g. a hub): `Git: n/a (not a repo)`.
@@ -125,7 +131,8 @@ End by offering to start Next up #1. Preflight exists to continue what's next.
 
 ## Rules
 
-- Read-only apart from the vault `pull --ff-only` and the repo `git fetch`. Nothing else is written.
+- Read-only apart from the vault `pull --ff-only`, the repo `git fetch`, and this session's own registry entry under
+  `handoffs/.live/` (local, never committed).
 - A fact the collector returned is never re-derived by hand.
 - Stale data is never presented as current: label legacy and guessed content.
 - `/preflight-deep` (if installed) runs this flow and then its deep reads.
