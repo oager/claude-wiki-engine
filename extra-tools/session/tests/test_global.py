@@ -1,7 +1,6 @@
 # ~/.claude/tools/session/tests/test_global.py
 import json
 import os
-import shutil
 import subprocess
 
 import open as op
@@ -49,7 +48,7 @@ def test_vault_state_pull_failure_is_reported(vault, tmp_path):
     sh("git", "init", "-q", "--bare", "-b", "main", str(bare))
     sh("git", "remote", "add", "origin", str(bare), cwd=vault)
     sh("git", "push", "-q", "-u", "origin", "main", cwd=vault)
-    shutil.rmtree(bare)
+    bare.rename(bare.with_name(bare.name + ".moved"))
     res = op.vault_state()
     assert res["stuck_merge"] is False and res["pull"].startswith("failed")
 
