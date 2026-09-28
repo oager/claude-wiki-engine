@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""/sync collector: what the next session must know that is not in the handoff yet.
+
+    close.py [--cwd P] [--project KEY]        facts for writing the handoff (JSON)
+    close.py trim <handoff.md>                 archive Last session entries older than 14 days
+    close.py push --message M --files F...     locked, stage-only-these-files vault push
+    close.py note --to K --from F --subject S [--file P]   write + push a vault inbox note
+    close.py inbox-done --files P...           move triaged inbox notes to done/ (stage, don't push)
+
+Always exits 0 and prints one JSON object. Spec: ~/.claude/docs/specs/2026-09-27-preflight-sync-redesign.md
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import inbox  # noqa: E402
+import leakguard  # noqa: E402
+import lib  # noqa: E402
+import procs  # noqa: E402
+import repohandoff  # noqa: E402
+from procs import SHELLS  # noqa: E402
+from procs import ancestors as _ancestors
+from procs import is_claude as _is_claude
+from procs import proc_stat as _stat
+
+SKIP_COMM = SHELLS | {"claude", "git", "ssh", "less"}
+
+default_branch = lib.default_branch
+
+
+def git_close(root, gh):
+    status = lib.git(root, "status", "--porcelain") or ""
+    unpushed = lib.git(root, "rev-list", "--count", "@{u}..HEAD")
+    base = default_branch(root)
+    local = (lib.git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads") or "").splitlines()
+    unmerged = [b for b in local
+                if b != base and (lib.git(root, "rev-list", "--count", f"{base}..{b}") or "0") != "0"]
+    res = {"dirty": status.splitlines()[:20], "dirty_count": len(status.splitlines()),
+           "unpushed": int(unpushed) if unpushed else None, "no_pr_branches": unmerged, "ci_pending": []}
+    if not gh:
+        return res
+    prs, err = lib.gh_json(["pr", "list", "-R", gh, "--state", "all", "--limit", "300",
+                            "--json", "headRefName,number,state,statusCheckRollup"])
+    if prs is None:
+        res["error"] = err  # without PR data every unmerged branch stays listed
+        return res
+    heads = {p["headRefName"] for p in prs}  # squash-merged branches have a PR, so they drop out here
+    res["no_pr_branches"] = [b for b in unmerged if b not in heads]
+    res["ci_pending"] = [p["number"] for p in prs
+                         if p["state"] == "OPEN" and lib.ci_state(p.get("statusCheckRollup")) == "pending"]
+    return res
+
+
+def _cgroup(pid_dir):
+    return (pid_dir / "cgroup").read_text(encoding="utf-8").strip().splitlines()[-1].rsplit("/", 1)[-1]
+
+
+def _self_chain(proc=Path("/proc")):
+    """Process names from this process up to init."""
+    names = []
+    for pid in _ancestors(proc):
+        try:
+            names.append(_stat(proc, pid)[0])
+        except (OSError, ValueError, IndexError):
+            pass
+    return names
+
+
+def _harness_child(proc, pid):
+    """True when pid descends from a `claude` process through a non-shell first hop: an MCP server
+    or other harness helper. Jobs a session starts through its Bash tool pass through a shell and stay."""
+    chain = []
+    while pid > 1:
+        try:
+            comm, ppid = _stat(proc, pid)
+        except (OSError, ValueError, IndexError):
+            return False
+        if _is_claude(comm):
+            return bool(chain) and chain[-1] not in SHELLS
+        chain.append(comm)
+        pid = ppid
+    return False
+
+
+def running_work(root, proc=Path("/proc"), probe=None):
+    """Processes working inside the repo that no systemd unit manages (dev servers, stray jobs).
+
+    A process in ANOTHER .service cgroup is managed (e.g. webapp-dashboard). One in OUR cgroup is
+    not dismissed even if that cgroup is a service: a long-running channel session runs inside one,
+    and what it launched is exactly the running work the next session must hear about.
+    """
+    if not proc.is_dir():
+        if probe is None and proc != Path("/proc"):
+            return {"supported": False, "procs": []}  # a test's missing fake /proc
+        t = (probe or procs.table)()  # Windows / macOS: match the project path in command lines
+        if not t["supported"]:
+            return {"supported": False, "procs": [], "reason": t.get("reason", "no process probe")}
+        rows = t["procs"]
+        if os.environ.get("CLAUDE_CODE_EXECPATH") and not any(map(_is_claude, procs.chain_comms(rows, os.getpid()))):
+            return {"supported": False, "procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
+        return {"supported": True, "procs": procs.running_in(root, rows, os.getpid()), "via": "cmdline"}
+    # Under Claude but no ancestor looks like Claude: its process naming changed again, and the harness filter
+    # would silently drop every Bash-tool job. Report "unchecked" rather than a false "nothing running".
+    if proc == Path("/proc") and os.environ.get("CLAUDE_CODE_EXECPATH") and not any(map(_is_claude, _self_chain())):
+        return {"supported": False, "procs": [], "reason": "claude process not recognized; update procs._CLAUDE_BIN"}
+    root = os.path.realpath(root)
+    mine = _ancestors()
+    try:
+        my_cg = _cgroup(proc / "self")
+    except OSError:
+        my_cg = None
+    found = []
+    for d in proc.iterdir():
+        if not d.name.isdigit() or int(d.name) in mine:
+            continue
+        try:
+            cwd = os.readlink(d / "cwd")
+            if cwd != root and not cwd.startswith(root + os.sep):
+                continue
+            cg = _cgroup(d)
+            comm = (d / "comm").read_text(encoding="utf-8").strip()
+            cmd = (d / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            continue
+        if (cg.endswith(".service") and cg != my_cg) or comm in SKIP_COMM or _is_claude(comm) or _harness_child(proc, int(d.name)):
+            continue
+        found.append({"pid": int(d.name), "cmd": cmd[:160]})
+    return {"supported": True, "procs": found}
+
+
+def deploy_drift(root, profile, ids):
+    """A service that deploys from this repo but started before the latest commit = pulled, not restarted."""
+    out = []
+    last = lib.git(root, "log", "-1", "--format=%ct")
+    for s in profile.get("services", []):
+        if not s.get("deploys_from_repo"):
+            continue
+        if lib.host_target(s.get("host"), ids) is not None:
+            out.append({"unit": s["unit"], "drift": None, "detail": "remote host — not checked"})
+            continue
+        scope = ["--user"] if s.get("scope", "user") == "user" else []
+        rc, o, _ = lib.RUN(["systemctl", *scope, "show", s["unit"], "-p", "ActiveEnterTimestamp", "--timestamp=unix"])
+        m = re.search(r"@(\d+)", o)
+        if rc != 0 or not m or not last:
+            out.append({"unit": s["unit"], "drift": None, "detail": "start time unavailable"})
+            continue
+        started = int(m.group(1))
+        out.append({"unit": s["unit"], "drift": started < int(last), "started": started, "last_commit": int(last)})
+    return out
+
+
+def collect_close(cwd, project=None):
+    ident = lib.resolve_identity(cwd, project)
+    if ident["how"] == "ambiguous":
+        return {"identity": ident}
+    ids = lib.load_self_ids()
+    (lib.vault() / "handoffs").mkdir(parents=True, exist_ok=True)
+    p = lib.handoff_path(ident["key"])
+    profile = lib.parse_handoff(p.read_text(encoding="utf-8"))["profile"] if p.is_file() else {}
+    root = ident["root"]
+    is_repo = lib.git(root, "rev-parse", "--git-dir") is not None
+    return {
+        "identity": ident,
+        "handoff": {"path": str(p), "exists": p.is_file(),
+                    "size_kb": round(p.stat().st_size / 1024, 1) if p.is_file() else 0},
+        "legacy": None if p.is_file() else lib.find_legacy(root, cwd),
+        "git": git_close(root, profile.get("gh") or ident["repo"]) if is_repo else None,
+        "running": running_work(root),
+        "drift": deploy_drift(root, profile, ids) if is_repo else [],
+        "repo_handoff": ({"uncommitted": bool(lib.git(root, "status", "--porcelain", "--", repohandoff.REL))}
+                         if profile.get("shared") and is_repo else None),
+        "repo_sha": lib.git(root, "rev-parse", "--short", "HEAD") if is_repo else None,
+        "vault_sha": lib.git(lib.vault(), "rev-parse", "--short", "HEAD"),  # recorded BEFORE this session's push
+        "inbox_untriaged": len(inbox.list_notes(ident["key"])) + len(inbox.list_notes("_user")),
+    }
+
+
+# --- trim ------------------------------------------------------------------------------
+
+ENTRY = re.compile(r"^- \*\*(\d{4}-\d{2}-\d{2})", re.M)
+ARC_MARK = "## Last session (archived)\n"
+ARC_HEAD = ("---\nkey: {key}\narchive: true\n"
+            "note: NOT live state. Older Last session entries, moved here by close.py trim.\n"
+            "---\n# Archive: {key}\n\n" + ARC_MARK)
+
+
+def trim(path, today=None, keep_days=14):
+    """Move `## Last session` entries older than keep_days into <key>.archive.md. Undated text stays."""
+    p = Path(path)
+    text = p.read_text(encoding="utf-8")
+
+    def size(t):  # the 100 KB guard reports on every path, including when nothing moved
+        kb = len(t.encode()) / 1024
+        return {"live_kb": round(kb, 1), "over_100kb": kb > 100}
+
+    m = re.search(r"^## Last session[^\n]*\n", text, re.M)
+    if not m:
+        return {"moved": 0, "note": "no Last session section", **size(text)}
+    start = m.end()
+    nxt = re.search(r"^## ", text[start:], re.M)
+    end = start + nxt.start() if nxt else len(text)
+    body = text[start:end]
+    starts = [e.start() for e in ENTRY.finditer(body)]
+    if not starts:
+        return {"moved": 0, **size(text)}
+    cutoff = (today or dt.date.today()) - dt.timedelta(days=keep_days)
+    entries = [body[a:b] for a, b in zip(starts, starts[1:] + [len(body)])]
+    old = [e for e in entries if dt.date.fromisoformat(ENTRY.match(e).group(1)) < cutoff]
+    if not old:
+        return {"moved": 0, **size(text)}
+    keep = [e for e in entries if e not in old]
+    new_text = text[:start] + body[:starts[0]] + "".join(keep) + text[end:]
+    moved = "".join(old)
+    if len(new_text) + len(moved) != len(text):
+        raise RuntimeError("trim would lose content; nothing written")
+    arc = p.with_name(p.stem + ".archive.md")
+    if arc.is_file():
+        a = arc.read_text(encoding="utf-8")
+        k = a.find(ARC_MARK)
+        a = a[:k + len(ARC_MARK)] + moved + a[k + len(ARC_MARK):] if k != -1 else a + "\n" + ARC_MARK + moved
+    else:
+        a = ARC_HEAD.format(key=p.stem) + moved
+    arc.write_text(a, encoding="utf-8")        # archive first: a crash in between duplicates, never loses
+    p.write_text(new_text, encoding="utf-8")
+    return {"moved": len(old), "archive": str(arc), **size(new_text)}
+
+
+# --- push ------------------------------------------------------------------------------
+
+def push(files, message, retries=15):
+    """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
+
+    The vault is a shared working tree (every session plus Obsidian-git): never `add -A`, never
+    reset/force. See memory/concepts/multi_session_vault_git.md.
+    """
+    if not lib.vault_is_git():
+        return {"status": "local"}  # a plain vault: the files are written; there is nothing to commit or push
+    v = lib.vault().resolve()
+    lock = v / ".sync.lock"
+    for _ in range(retries):
+        try:
+            lock.mkdir()
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 300:  # stale: its owner died mid-sync
+                    lock.rmdir()
+                    continue
+            except OSError:
+                pass
+            time.sleep(2)
+    else:
+        return {"status": "locked"}
+    try:
+        def g(*args, t=8):
+            return lib.RUN(["git", "-C", str(v), *args], timeout=t)
+
+        rel = asked = [Path(f).resolve().relative_to(v).as_posix() for f in files]
+        # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
+        rel = [r for r in rel if (v / r).exists() or g("ls-files", "--error-unmatch", "--", r)[0] == 0]
+        dropped = [r for r in asked if r not in rel]  # never merged into `missing`: /sync retries on `missing`
+
+        def done(status, **extra):
+            res = {"status": status, **extra}
+            if dropped:
+                res["dropped"] = dropped
+            return res
+
+        if not rel:  # an empty pathspec would sweep other sessions' staged files into add/diff/commit
+            return done("stage_failed", detail="no listed file exists or is tracked")
+        rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
+        if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
+            return done("stage_failed", detail=(err or out)[-300:])
+        if g("diff", "--cached", "--quiet", "--", *rel)[0] != 0:
+            rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
+            if rc != 0:
+                return done("commit_failed", detail=(err or out)[-300:])
+        elif g("rev-list", "--count", "@{u}..HEAD")[1].strip() in ("", "0"):
+            return done("nothing")  # nothing new AND nothing left unpushed by an earlier failed run
+        stash = None
+        for _attempt in range(2):
+            rc, out, err = g("pull", "--rebase", "--autostash", t=60)
+            if lib.rebase_in_progress(v):
+                # Never leave the shared vault mid-rebase: abort restores the local commit and the autostash.
+                g("rebase", "--abort", t=60)
+                return {"status": "rebase_conflict", "detail": (out + err)[-500:]}
+            text = (out + err).lower()
+            if "autostash" in text and "conflict" in text:
+                # The rebase landed; popping other sessions' uncommitted work conflicted. Git kept it as
+                # the newest stash entry: name it by sha so recovery never touches an older stash.
+                stash = g("rev-parse", "stash@{0}")[1].strip()
+            rc, out, err = g("push", "-q", t=60)
+            if rc == 0:
+                break
+        else:
+            res = done("push_failed", detail=(err or out)[-300:])
+            return {**res, "stash": stash} if stash else res
+        missing = [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
+        res = done("autostash_conflict" if stash else "ok",
+                    sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing)
+        return {**res, "stash": stash} if stash else res
+    finally:
+        try:
+            lock.rmdir()
+        except OSError:
+            pass
+
+
+def write_repo_handoff(cwd, project=None):
+    ident = lib.resolve_identity(cwd, project)
+    p = lib.handoff_path(ident["key"]) if ident.get("key") else None
+    if not p or not p.is_file():
+        return {"written": False, "reason": "no project handoff to publish"}
+    names = lib.load_self_ids().get("names") or ["unknown"]
+    needles = leakguard.needles(lib.user_file()["profile"], names=False)
+    return repohandoff.write(ident["root"], p.read_text(encoding="utf-8"), names[0], needles)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="/sync collector")
+    ap.add_argument("--cwd", default=os.getcwd())
+    ap.add_argument("--project", help="handoff key, when the start folder holds several projects")
+    sub = ap.add_subparsers(dest="cmd")
+    t = sub.add_parser("trim")
+    t.add_argument("path")
+    pu = sub.add_parser("push")
+    pu.add_argument("--message", required=True)
+    pu.add_argument("--files", nargs="+", required=True)
+    n = sub.add_parser("note")
+    n.add_argument("--to", required=True)
+    n.add_argument("--from", dest="from_", required=True)
+    n.add_argument("--subject", required=True)
+    n.add_argument("--file")
+    d = sub.add_parser("inbox-done")
+    d.add_argument("--files", nargs="+", required=True)
+    sub.add_parser("repo-handoff")
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "trim":
+            res = trim(a.path)
+        elif a.cmd == "push":
+            res = push(a.files, a.message)
+        elif a.cmd == "note":
+            body = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
+            p = inbox.write_note(a.to, a.from_, a.subject, body)
+            res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
+        elif a.cmd == "inbox-done":
+            res = {"moved": len(a.files), "stage": inbox.mark_done(a.files)}
+        elif a.cmd == "repo-handoff":
+            res = write_repo_handoff(a.cwd, a.project)
+        else:
+            res = collect_close(a.cwd, a.project)
+    except Exception as e:  # /sync must still be able to report: surface the failure as data
+        res = {"fatal": f"{type(e).__name__}: {e}"}
+    print(json.dumps(res, indent=1, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,142 +1,248 @@
 ---
+source: claude-wiki-engine
 name: sync
-description: End-of-session ritual — update session memory + the project MEMORY.md index, then commit and push the memory vault concurrency-safely so every machine stays in sync. Use for "sync", "update the usual", or "/sync". Add "and ship" to also commit/push the project repo.
+description: Close a session cleanly — write this project's handoff (~/.claude/handoffs/<key>.md), report git state and running work, triage the inbox, propose user-wide conventions, file global knowledge, push the vault. Add "and ship" to also commit and push the project repo.
 disable-model-invocation: true
 ---
 
-# Sync Memory & Vault
+# Sync Memory & Status
 
-Update persistent memory for the current project, then push the vault so every machine stays in sync.
+Update all persistent memory and status files for the current project, then push the vault so both machines stay in sync.
 
-## Step 0 — Resolve paths
-- **Vault/config:** `~/.claude/` on Linux/macOS, `%USERPROFILE%\.claude\` on Windows.
-- **Project memory dir:** wherever this project's memory lives (e.g. `<vault>/projects/<slug>/memory/`,
-  or the project's own `memory/`).
-- **Layout:** note whether the project uses a session-state file (`SESSION_RESUME.md`) or just
-  `MEMORY.md` + individual pages.
+## Step 0 — Collect
 
-## Step 1 — Update session memory
-- If a `SESSION_RESUME.md` exists: update Last-updated (UTC), current state, what happened this session,
-  how to resume next session, and what NOT to do.
-- Otherwise: update the relevant `<project-memory>/*.md` files directly (new feedback → feedback file,
-  new fact → project file, etc.).
-- Keep entries factual and timestamped. Only add what's new — don't restate what's already there.
+```bash
+python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
+```
 
-## Step 2 — Check the project MEMORY.md index
-Did this session produce anything worth remembering across future sessions? (user feedback like
-"always/never do X", a discovery that applies beyond this one task, a workflow or tooling lesson that
-saved or wasted time, a cross-machine finding.)
-- If yes: write a memory file and add a one-line index entry to `MEMORY.md` (a link + a one-line
-  summary; no character cap — see schema.md "Page conventions". If the index is sectioned, file it
-  under the matching `##` category).
-- If no: skip — don't invent entries just to have something to show. Also scan the indexed files and
-  fix or remove anything now stale.
+One JSON object: `identity`, `handoff {path, exists, size_kb}`, `legacy`, `git {dirty, dirty_count, unpushed,
+no_pr_branches, ci_pending}`, `running {procs}`, `drift`, `inbox_untriaged`, `repo_handoff`, `repo_sha`, `vault_sha`.
+`identity.how == "ambiguous"` →
+ask which project, re-run with `--project <key>`. Keep this `vault_sha`: it is recorded **before** this session's
+push, which is exactly what the next `/preflight` diffs from.
 
-### Step 2a — Promote globally-useful findings to the wiki
-If a durable finding is broadly applicable — reusable across projects, or domain-independent rather than
-specific to this one project — hand it to **`/wiki-ingest`** (the single ingestion engine: eligibility
-check, subfolder routing, page write with guardrails, `MEMORY.md` index line, `Related:` links, log
-entry). Clear cases → delegate; borderline → let `/wiki-ingest` pause and ask; nothing durable → skip.
-Don't duplicate ingestion logic here — `/wiki-ingest` is the source of truth.
+## Step 1 — Write the handoff (the clean-close contract)
+
+A clean close = the next session can start from the handoff alone, with nothing hidden in git, in running processes
+or in the inbox.
+
+**Concurrent /sync:** before writing, compare the handoff's `updated` with the value this session read at
+`/preflight` (or at its first read). If it changed, another session synced in between: **merge** — keep their new
+Next up, Open items and Standing notes, add this session's, re-rank — never rewrite over them, and say
+`merged with a concurrent /sync (<updated_by>)` in the report.
+
+File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
+it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and
+log paths → Profile; the dated diary → Last session (trim archives the old part); "What NOT to do" and procedures →
+Standing notes. Leave the legacy file where it is.
+
+| Section | Rule |
+|---|---|
+| Next up | **Rewrite.** Max 5, ranked; item 1 = where the next session starts. From this session's work, the previous Next up and Open items. |
+| Warnings | **Rewrite** from Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no `/proc`, e.g. Windows, or `running.reason` set) → write `running work unchecked` (plus the reason), never `none`; likewise `git.error` → `PR state unchecked`. `running.via == "cmdline"` and `running.procs` is empty → write `running work: none found (command-line match)` instead of `none` (Windows/macOS match command lines, weaker evidence than the Linux `/proc` probe; it still counts as no running work for a clean close). `inbox_untriaged` > 0 → `N inbox notes untriaged`; `repo_handoff.uncommitted` → `repo handoff not committed`. Nothing → `none` (= clean close). |
+| Current state | **Rewrite:** live / deployed state and repo state. |
+| Open items | Add new, remove done. |
+| Profile | Add checks this session verified (preflight's `guessed` / `unknown` candidates that proved right, real unit names, health URLs, queue files, `deploys_from_repo`). List every Profile change in the Step 5 report. |
+| Standing notes | Add new gotchas. Never drop one on a rewrite. |
+| Last session | Prepend `- **YYYY-MM-DD** — <what happened>`. That exact bullet form is what trim dates. |
+| Frontmatter | `updated` (UTC `YYYY-MM-DDTHH:MMZ`), `updated_by` (hostname), `repo_sha` + `vault_sha` from Step 0, `type`. |
+
+Verify the Profile still parses (must print `None`):
+
+```bash
+python3 -c "import sys; sys.path.insert(0,'$HOME/.claude/tools/session'); import lib; print(lib.parse_handoff(open('<handoff.path>').read())['profile_error'])"
+```
+
+### Step 1a — Trim
+
+```bash
+python3 ~/.claude/tools/session/close.py trim <handoff.path>
+```
+
+Moves Last session entries older than 14 days into `<key>.archive.md` (created if needed). `over_100kb: true` means an
+undated section has grown: split it by hand, and never cut Standing notes.
+
+### Step 1b — Inbox triage
+
+For every note `/preflight` listed: act on it, or turn it into a Next up item that cites the note's subject. Then
+move the triaged notes and add every path the command prints under `stage` to the Step 3 push:
+
+```bash
+python3 ~/.claude/tools/session/close.py inbox-done --files <note paths…>
+```
+Notes left untouched stay and appear under Warnings.
+
+### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
+
+```bash
+python3 ~/.claude/tools/session/close.py repo-handoff --cwd "$PWD"
+```
+`written: true` → the file is committed with the project's normal flow (`/sync and ship`, or the next PR); until then
+Warnings says `repo handoff not committed`. `refused` → the leak guard found personal strings; fix the private
+handoff's public sections (Next up, Current state, Warnings, Open items) and re-run. Never commit a refused file by hand.
+
+### Step 1d — User handoff proposals (`handoffs/_USER.md`)
+
+Propose a change only with evidence of one of:
+1. the user stated a general rule this session that names no single project;
+2. the same Convention, check or Standing note already sits in two or more project handoffs (propose lifting it into
+   `_USER.md` and removing the duplicates);
+3. this session verified a user-wide fact (a queue or script no single project owns).
+
+Test: "would this still be true in a different project tomorrow?" When unsure, it stays in the project handoff. Skip
+anything under `Declined`. Show proposals in the report and wait for a per-item answer:
+
+```
+User:     2 proposals for _USER.md (reply e.g. "1 yes, 2 no")
+  1. + Conventions: "<line>"      evidence: <where it came from>
+  2. - Standing notes: "<line>"   contradicted: <by what>
+```
+`yes` → write it and add `_USER.md` to the Step 3 push. `no` → add `- **YYYY-MM-DD** — <proposal> (<reason>)` under
+`Declined`. Anything unclear → write nothing and propose again next time. Removals use the same gate; a Standing note
+is never dropped silently. If `/preflight` reported `global.user.over_max`, say so and suggest `/doc-review`; never
+trim `_USER.md` yourself.
+
+## Step 2 — Check per-project MEMORY.md
+
+Path: `<project-memory>/MEMORY.md`
+
+Ask: did this session produce anything worth remembering across future sessions?
+- New feedback from the user ("don't do X", "always do Y")
+- A discovery that applies beyond this one setup or trade
+- A workflow or tooling pattern that saved or wasted time
+- A cross-machine or cross-project finding
+
+If yes: write a new memory file and add a one-line index entry to MEMORY.md (a link + one-line
+summary; no character cap — see `memory/schema.md` "Page conventions").
+If no: skip — don't create entries just to have something to show.
+
+Also scan existing memory files referenced in the index. If anything is now stale or wrong, update or remove it.
+
+### Step 2a — Delegate global-eligible knowledge to /wiki-ingest
+
+This is the **ingest** checkpoint for the global memory wiki — but `/sync` does NOT contain the
+ingestion logic. When the durable finding qualifies for the GLOBAL wiki (per the promotion rule in `_USER.md`
+Conventions (with none: promote only what is validated in two or more projects or clearly general — cheaper to miss
+than to poison)), **hand it to `/wiki-ingest`**
+(invoke the skill). It owns the single ingestion path: schema eligibility check, subfolder routing,
+page write (with guardrails), MEMORY.md index line, `Related:` footer, and the `log.md` entry.
+
+- Clear global lessons → auto-delegate to `/wiki-ingest` (it shows takeaways before writing).
+- Borderline (global vs project unclear) → `/wiki-ingest` pauses and asks.
+- Nothing durable this session → skip; Step 3 just commits/pushes as normal.
+
+Do NOT duplicate the ingestion steps here — `/wiki-ingest` is the source of truth.
 
 ### Step 2b — Auto-memory harvest (gated, periodic)
 
-If your harness keeps a native auto-memory store (`<vault>/projects/<slug>/memory/`), it grows on its
-own and is separate from the global wiki (`<vault>/memory/`). Durable cross-project lessons get
-stranded there. This step is the **gated bridge** — it PROPOSES, never auto-writes.
+The native auto-memory (`<vault>/projects/<slug>/memory/`) grows automatically and is a separate
+store from the global wiki (`<vault>/memory/`). Durable cross-project lessons can get stranded there.
+This step is the **gated bridge** — it PROPOSES, never auto-writes.
 
-**Run it only periodically (not every `/sync`)** — roughly weekly, or when you have not harvested in a
+**Run it only periodically (not every `/sync`)** — roughly weekly, or when you haven't harvested in a
 while. Skip silently otherwise.
 
 1. **Delta scan (cheap):** find the last harvest timestamp = date of the most recent
    `## [YYYY-MM-DD] harvest |` entry in `<vault>/memory/log.md` (if none, use ~14 days ago). List
-   auto-memory `*.md` whose mtime is newer than that. Do not re-read the whole store.
+   auto-memory `*.md` whose mtime is newer than that. Don't re-read the whole store.
    ```bash
    last=$(grep -oE '^## \[[0-9-]+\] harvest' "<vault>/memory/log.md" | tail -1 | grep -oE '[0-9-]+' || echo "")
    find "<vault>/projects/<slug>/memory" -name '*.md' -newermt "${last:-14 days ago}"
    ```
-2. **2-question filter** per candidate: (a) does it pass the promotion rule (validated in ≥2 separate
-   contexts, OR domain-independent)? (b) is it already covered by a wiki page (`grep` its topic in
-   `memory/MEMORY.md`)? Only survivors proceed. Skip transient/operator/state pages (session-state
-   files, live state, raw per-source notes, project-specific bug fixes).
+2. **2-question filter** per candidate: (a) does it pass the promotion rule in `_USER.md` Conventions (with none:
+   promote only what is validated in two or more projects or clearly general — cheaper to miss than to poison)? (b) is it already covered by a wiki page
+   (`grep` its topic in `memory/MEMORY.md`)? Only survivors proceed. Skip transient/operator/state
+   pages (SESSION_RESUME, live state, per-trader raw profiles, project-specific bug fixes).
 3. **Propose, gated:** show the user the shortlist with one-line rationales. Do NOT write anything
-   without confirmation — the promotion rule is deliberately conservative, since it is cheaper to miss
-   a lesson than to poison the wiki with one that does not generalize.
-4. **On approval:** hand each to `/wiki-ingest` (it adds a `source:` backlink to the auto-memory
+   without confirmation (promotion rule is deliberately conservative — "cheaper to miss than poison").
+4. **On approval:** hand each to `/wiki-ingest` (it adds the `source:` backlink to the auto-memory
    original; leave the original in place — supersession-safe).
 5. **Record:** append one `## [YYYY-MM-DD] harvest | N promoted, M reviewed` line to `log.md` so the
-   next delta scan stays cheap.
+   next delta scan is cheap.
 
-If nothing new is promote-worthy, log nothing and move on.
+If nothing new is promote-worthy, just log nothing and move on.
 
-## Step 3 — Push the vault (concurrency-safe)
-⚠️ If the vault is a **shared** working tree (multiple sessions and/or an auto-commit tool such as
-Obsidian-git write to it), **never `git add -A`** — it stages other writers' half-finished work and
-phantom deletions and can silently commit their work away. Stage ONLY the files THIS session changed,
-under a lock.
+## Step 3 — Push vault
 
-### 3a. Acquire the sync lock (atomic `mkdir` mutex — atomic on every OS)
 ```bash
-VAULT="<vault>"; LOCK="$VAULT/.sync.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  find "$LOCK" -maxdepth 0 -mmin +5 2>/dev/null | grep -q . && rmdir "$LOCK" 2>/dev/null && mkdir "$LOCK" 2>/dev/null \
-    || { echo "another session is syncing — try again shortly"; exit 0; }
-fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT   # always release
+python3 ~/.claude/tools/session/close.py push --message "sync: <key> session <YYYY-MM-DD>" \
+  --files <handoff.path> [<key>.archive.md] <every memory / wiki file THIS session changed>
 ```
 
-### 3b. Stage ONLY your files (explicit allowlist — never `-A`)
-```bash
-git -C "$VAULT" add    <changed-tracked-file> ...
-git -C "$VAULT" add -f <new-memory-file> ...          # see ⚠️
-```
-If a file you wrote shows as deleted/missing elsewhere, that's another session's phantom deletion — do
-NOT let it into your commit.
+It takes the `.sync.lock` mutex (stale after 5 min), stages **only** the listed files with `add -f` (new files under
+`projects/*/memory/` are silently skipped without `-f`), makes a pathspec commit so other sessions' staged work stays
+out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file with `git cat-file -e HEAD:<path>`.
 
-⚠️ **New files can be silently skipped by `.gitignore`.** If the memory dir sits under an ignored parent
-that is re-included via a negation (`!.../memory/**`), git cannot re-include a brand-NEW file with a
-plain `git add <path>` — the add is silently dropped (no error, nothing staged). Force-add new memory
-files (`git add -f`), and after pushing verify each landed with `git cat-file -e HEAD:<path>` (not just
-`git diff --cached --stat`).
+| `status` | Do |
+|---|---|
+| `ok` | Report `sha`. If `missing` is non-empty, re-run push with those files. |
+| `nothing` | Report "nothing to commit" (nothing staged and nothing left unpushed). |
+| `locked` | Another session is syncing: retry once a minute later, else report the push as deferred. |
+| `stage_failed` | No listed file exists or is tracked (the list was wrong): fix the list and re-run. Nothing was staged. |
+| `dropped` non-empty (on any status) | These listed paths don't exist and were never committed, so they were skipped. Harmless only for an archive file `trim` never created; anything else means the file list is wrong — fix it and re-run push. |
+| `local` | The vault is not a git repo: the files are written locally and there is nothing to push. Report "vault: local". |
+| `rebase_conflict` | The remote changed the same file. close.py already ran `git rebase --abort`: the vault is back on the branch with your commit intact and nothing pushed. Pull the other side's change, merge the file by hand (union-merge append-only files), commit, and re-run push; a re-run pushes the existing commit. |
+| `autostash_conflict` | Your commit was pushed, but popping OTHER sessions' uncommitted work conflicted. Follow the recovery below using the `stash` sha from the output. |
+| `commit_failed` / `push_failed` | Report `detail`. `Permission denied` = an antivirus handle: defer the push (the local commit is safe); a reboot clears it. Re-running push later pushes the waiting commit. |
 
-⚠️ **`git add` can silently stage nothing on case-insensitive filesystems** (Windows) when the path's
-case doesn't match git's index. After staging, always confirm with `git diff --cached --stat`; if it's
-empty for a file you definitely changed, re-add with `':(icase)<path>'` or the exact path that
-`git status --porcelain` reports.
+**Autostash conflict recovery** (other sessions' uncommitted work is in the stash whose sha push returned as
+`stash`; call it `$S`. Use the sha, never `stash@{0}`: the vault can hold older autostash entries):
+1. Resolve the conflicted files. For an append-only file (`memory/log.md`) always union-merge: keep every entry,
+   ordered by date. Never pick a side.
+2. Clear the conflict state without committing their work: `git add <file>` then `git restore --staged <file>`.
+3. Verify every stashed file survived before dropping the stash:
+   ```bash
+   for f in $(git stash show --name-only "$S"); do
+     git diff --quiet HEAD -- "$f" && echo "LOST: $f" || echo "ok: $f"
+   done
+   ```
+4. Autostash restores files STAGED that were unstaged before: `git restore --staged <files>`.
+5. Only then drop exactly that entry: find its index with `git stash list --format='%H %gd' | grep "^$S"` and
+   `git stash drop <that stash@{N}>`.
 
-### 3c. Commit (skip if nothing staged)
-```bash
-git -C "$VAULT" diff --cached --quiet && echo "nothing to commit" \
-  || git -C "$VAULT" commit -m "sync: <project> <YYYY-MM-DD>"
-```
-
-### 3d. Integrate remote, then push
-```bash
-git -C "$VAULT" pull --rebase --autostash 2>&1 | tail -5
-git -C "$VAULT" push 2>&1 | tail -5   # if rejected (remote moved), repeat 3d ONCE more
-```
-- **`Permission denied` on rebase** usually means an antivirus or indexer is holding a delete-pending
-  handle on a file (often one it flagged). Do **NOT** `reset --hard` / `push --force` — the local commit
-  is safe (it's HEAD). A reboot reliably clears it; prevent recurrence with an AV exclusion for the
-  vault directory. Defer the push and report.
-
-Report: committed N files / nothing to commit; pushed / deferred (locked).
+**Never commit a shared index line that points at a file you are not committing.** `memory/MEMORY.md` and
+`memory/log.md` are written by every session; if another session's new page is still untracked, leave the shared
+file unstaged and let the owning session's commit carry both.
 
 ## Step 4 — "and ship" (only when explicitly requested)
-When called as `/sync and ship`: after Steps 1–3, also commit and push the current **project** repo —
-stage the meaningful changes, commit with an imperative message, push. Then report the hash and push
-status.
+
+When called as `/sync and ship`: after completing Steps 1–3, commit and push the current project repo. Try invoking the `/ship` skill via the Skill tool first. If that's refused (ship is `disable-model-invocation: true`), Read `~/.claude/skills/ship/SKILL.md` and follow it inline: branch → commit → push → open a PR and stop (merge only if the user said `and ship merge`; never on a live-money repo without confirmation). Direct push only for the repos ship's Step 0 lists. Report the PR URL.
+
+## Step 5 — Report
+
+```
+SYNC — <key> — <local time>
+Handoff:  <handoff.path> · clean close ✓ | warnings: <list>
+Profile:  <checks added/changed | unchanged>
+Vault:    pushed <sha> | nothing to commit | deferred (<reason>)
+```
+
+## Gotchas
+
+Hardest-won traps (distilled — see Step 3 + the concept pages for full rationale):
+
+- **Never `git add -A` on the vault** — it's a shared multi-session working tree; `-A` stages other sessions' half-writes and phantom deletions and silently commits their work away. Stage an explicit allowlist of only the files THIS session touched (Step 3, `close.py push`). `memory/concepts/multi_session_vault_git.md`.
+- **Never `git reset --hard` / `git push --force` on the vault** — destroys concurrent sessions' work. Recover a phantom-deleted file with targeted `git checkout HEAD -- <file>`, never a reset.
+- **Lock before any vault git op** — `mkdir`-based atomic mutex (Step 3, `close.py push`), released on exit, 5-min stale breaker. One committer at a time.
+- **`git add` can silently stage nothing** (Windows `core.ignorecase=true` case drift) — always confirm with `git diff --cached --stat`; if empty for a file you changed, re-add with `':(icase)<path>'` or the exact path from `git status --porcelain`. The Capital-slug dir was renamed lowercase 2026-06-12 (`c33519b`), but the guard stays for future drift. `memory/concepts/preflight_cwd_slug_gap.md`.
+- **NEW `projects/*/memory/` files need `git add -f`** — `.gitignore` re-includes that dir via a negation, and git can't re-include a brand-NEW file under an ignored parent with a plain `git add <path>` (silently skipped, nothing staged). Already-tracked files are fine; only new files drop. Force-add them and verify with `git cat-file -e HEAD:<path>` after push. (2026-07-01: a fresh `gamma_code_review` memory silently never committed until force-added.)
+- **`Permission denied` on rebase = antivirus, not git** — AV real-time protection quarantines a file with security-incident/IOC content and holds a delete-pending handle. Do NOT force or reset; the local commit is safe (it's HEAD). Reboot clears it; add an AV exclusion for `~/.claude` to prevent recurrence. Windows Search is a red herring. Defer the push and report.
+- **After any messy rebase, verify your edits survived** — a two-session same-file rebase can auto-merge your changes away with NO conflict shown. `grep HEAD:<file>` for your key markers before assuming the commit kept them (lost the deep-dive `--quick` edits this way, 2026-06-09→11).
+- **Auto-memory is path/case-fragile** — durable cross-machine knowledge belongs in the global wiki (`memory/`) via `/wiki-ingest`, not the cwd-keyed project store. Launch Claude from the canonical path to keep the slug stable.
+- **Handoffs are trimmed every sync (Step 1a)** — `close.py trim` archives Last session entries older than 14 days, so the file `/preflight` reads stays small. It never cuts undated sections (Standing notes are live procedure, not history). A pre-redesign SESSION_RESUME once reached 298 KB with a single 40,385-character line (2026-08-01).
 
 ## Rules
-- **Never `git add -A`** on a shared vault — stage an explicit allowlist of only your own files (3b).
-- **Never `git reset --hard` / `git push --force`** on a shared vault — recover a phantom-deleted file
-  with `git checkout HEAD -- <file>`, never a reset.
-- **Lock before any vault git op** (3a); release on exit; 5-minute stale-lock breaker.
-- **On a `Permission denied` rebase jam** — defer the push (the local commit is safe); don't force. A
-  reboot clears the handle; an AV exclusion for the vault prevents recurrence.
-- **After a messy rebase, verify your edits survived** (`git show HEAD:<file>` for your key markers) —
-  a same-file rebase can auto-merge changes away with no conflict shown.
-- Convert relative dates to absolute when saving; keep `MEMORY.md` index entries to a link + a
-  one-line summary (no character cap — the test is whether the line helps you decide to open the
-  page, not its length); only
-  add genuinely new information; if nothing meaningful changed, say so and skip.
+- **NEVER `git add -A` on the vault** — shared multi-session working tree; `-A` commits other sessions'
+  half-writes and phantom deletions. Stage only your own files (Step 3, `close.py push`). See `memory/concepts/multi_session_vault_git.md`.
+- **Never `git reset --hard` / `git push --force` on the vault** — destroys concurrent sessions' work.
+  Recover phantom deletions with targeted `git checkout HEAD -- <file>`, never `reset --hard`.
+- **Lock before git** (Step 3, `close.py push`) — serialize commits across sessions. Release on exit.
+- **On a `Permission denied` rebase jam** — defer the push (local commit is safe), don't force; reboot clears
+  the handle. Add an **antivirus exclusion for `~/.claude`** to prevent it (AV quarantining flagged file content
+  was the real cause — not Windows Search).
+- Don't create duplicate memory entries — check the index first
+- Convert relative dates to absolute dates when saving
+- MEMORY.md index entries are a link + a one-line summary — no character cap (removed 2026-07-25);
+  the test is whether the line helps you decide to open the page, not its length
+- Only add genuinely new information — restating known facts wastes context next session
+- If nothing meaningful changed, say so and skip
