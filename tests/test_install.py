@@ -116,18 +116,19 @@ class SessionExtrasTest(unittest.TestCase):
         self.assertIn("<!-- wiki-engine:start -->", t)
 
     def test_update_replaces_tagged_and_skips_untagged(self):
+        # non-session extras: a tagged preflight next to an untagged sync is a session conflict (ReviewFixesTest)
         s = self.tmp / "skills"
-        (s / "preflight").mkdir(parents=True)
-        (s / "sync").mkdir()
-        (s / "preflight/SKILL.md").write_text("---\nname: preflight\nsource: claude-wiki-engine\n---\nold\n",
-                                              encoding="utf-8")
-        (s / "sync/SKILL.md").write_text("---\nname: sync\n---\nmine\n", encoding="utf-8")
+        (s / "recap").mkdir(parents=True)
+        (s / "ripple").mkdir()
+        (s / "recap/SKILL.md").write_text("---\nname: recap\nsource: claude-wiki-engine\n---\nold\n",
+                                          encoding="utf-8")
+        (s / "ripple/SKILL.md").write_text("---\nname: ripple\n---\nmine\n", encoding="utf-8")
         self.inst.do_update(self.cfg(extra_skills=[]))
-        self.assertNotIn("\nold\n", (s / "preflight/SKILL.md").read_text(encoding="utf-8"))
-        self.assertIn("mine", (s / "sync/SKILL.md").read_text(encoding="utf-8"))
+        self.assertNotIn("\nold\n", (s / "recap/SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("mine", (s / "ripple/SKILL.md").read_text(encoding="utf-8"))
         # versioned backup lives under <config_base>/.wikibak/, never under skills/ (a
         # skills/<name>.wikibak/ dir with a SKILL.md could be loaded as a duplicate skill)
-        baks = list((self.tmp / ".wikibak" / "skills").glob("preflight-*"))
+        baks = list((self.tmp / ".wikibak" / "skills").glob("recap-*"))
         self.assertEqual(len(baks), 1)
         self.assertIn("old", (baks[0] / "SKILL.md").read_text(encoding="utf-8"))
         self.assertFalse(list(s.glob("*.wikibak*")))
@@ -382,6 +383,87 @@ class ReviewFixesTest(unittest.TestCase):
         self.update()
         self.assertEqual(self.claude_md().count(self.inst.SESSION_START), 1)
 
+    # --- round 2 ---
+
+    def test_update_with_conflict_does_not_refresh_session_skills(self):
+        # 701848e installed preflight without tools/session (its preflight did not need them) next to the
+        # user's own sync. Refreshing it to today's preflight, which calls tools/session, would break it.
+        self.own_sync()
+        legacy = (REPO / "tests/fixtures/legacy-701848e-preflight-SKILL.md").read_bytes()
+        (self.skills / "preflight").mkdir()
+        (self.skills / "preflight/SKILL.md").write_bytes(legacy)
+        out = self.update()
+        self.assertEqual((self.skills / "preflight/SKILL.md").read_bytes(), legacy)
+        self.assert_session_not_wired()
+        self.assertFalse((self.tmp / ".wikibak/skills").exists())
+        notes = [ln for ln in out.splitlines() if "session handoff" in ln]
+        self.assertEqual(len(notes), 1, out)
+        self.assertIn("preflight", notes[0])
+
+    def test_update_without_conflict_still_refreshes_legacy_preflight(self):
+        legacy = (REPO / "tests/fixtures/legacy-701848e-preflight-SKILL.md").read_bytes()
+        (self.skills / "preflight").mkdir(parents=True)
+        (self.skills / "preflight/SKILL.md").write_bytes(legacy)
+        self.update()
+        self.assertNotEqual((self.skills / "preflight/SKILL.md").read_bytes(), legacy)
+        self.assertTrue((self.tmp / "tools/session/open.py").is_file())
+
+    def misordered(self, crlf: bool = False) -> bytes:
+        eol = "\r\n" if crlf else "\n"
+        s, e = self.inst.SESSION_START, self.inst.SESSION_END
+        return eol.join(["top", e, "middle", s, "bottom", ""]).encode()
+
+    def assert_left_alone(self, fn, data: bytes):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_bytes(data)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fn(cmd)  # must not raise
+        self.assertEqual(cmd.read_bytes(), data)
+        self.assertIn("left unchanged", out.getvalue())
+
+    def test_remove_block_leaves_misordered_markers_alone(self):
+        for crlf in (False, True):
+            self.assert_left_alone(lambda c: self.inst.remove_block(c, self.inst.SESSION_START,
+                                                                     self.inst.SESSION_END),
+                                   self.misordered(crlf))
+
+    def test_inject_block_leaves_misordered_markers_alone(self):
+        self.assert_left_alone(lambda c: self.inst.inject_block(c, "new", self.inst.SESSION_START,
+                                                                 self.inst.SESSION_END), self.misordered())
+
+    def test_inject_block_leaves_unpaired_start_alone(self):
+        # appending a second block after an orphan start marker would, on the next inject, eat the text between
+        data = f"a\n{self.inst.SESSION_START}\nkeep me\n".encode()
+        self.assert_left_alone(lambda c: self.inst.inject_block(c, "new", self.inst.SESSION_START,
+                                                                 self.inst.SESSION_END), data)
+
+    def test_update_with_misordered_session_markers_does_not_crash(self):
+        self.stale_setup(crlf=False)
+        cmd = self.tmp / "CLAUDE.md"
+        data = cmd.read_bytes().replace(self.inst.SESSION_START.encode(), b"@@S@@")
+        data = data.replace(self.inst.SESSION_END.encode(), self.inst.SESSION_START.encode())
+        data = data.replace(b"@@S@@", self.inst.SESSION_END.encode())
+        cmd.write_bytes(data)
+        self.update(claude_md=True)
+        text = cmd.read_text(encoding="utf-8")
+        self.assertIn("use /sync", text)  # nothing lost
+        self.assertEqual(text.count(self.inst.SESSION_START), 1)
+
+    def test_update_backs_up_tools_session_only_when_changed(self):
+        self.inst.build_plan(self.cfg()).execute()
+        tools = self.tmp / "tools/session"
+        (tools / "__pycache__").mkdir(exist_ok=True)  # runtime bytecode is not a user change
+        (tools / "__pycache__/lib.cpython-311.pyc").write_bytes(b"\0runtime")
+        self.update()
+        self.assertFalse((self.tmp / ".wikibak/tools").exists())
+        (tools / "lib.py").write_text("# my local patch\n", encoding="utf-8")
+        self.update()
+        baks = list((self.tmp / ".wikibak/tools").glob("session-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertIn("my local patch", (baks[0] / "lib.py").read_text(encoding="utf-8"))
+        self.assertNotIn("my local patch", (tools / "lib.py").read_text(encoding="utf-8"))
+
     def test_remove_block_is_noop_without_block(self):
         cmd = self.tmp / "CLAUDE.md"
         cmd.write_bytes(b"a\r\nb\r\n")
@@ -468,6 +550,46 @@ class ReviewFixesTest(unittest.TestCase):
         for name in self.inst.SKILL_SETS["core"]:
             self.assertTrue(self.inst.is_engine_skill(self.skills / name))
             self.assertIn(self.inst.ENGINE_TAG, (self.skills / name / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_all_engine_extras_are_tagged(self):
+        for name in self.inst.EXTRA_SKILLS:
+            self.assertTrue(self.inst.is_engine_skill(self.inst.ENGINE / "extra-skills" / name), name)
+
+    def test_update_refreshes_untagged_committed_extra_versions(self):
+        # every extra shipped untagged before this version: its latest untagged bytes = today's minus the tag line
+        others = sorted(set(self.inst.EXTRA_SKILLS) - self.inst.SESSION_EXTRAS)
+        for name in others:
+            src = (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_bytes()
+            legacy = src.replace(self.inst.ENGINE_TAG.encode() + b"\n", b"", 1)
+            self.assertNotEqual(legacy, src, name)
+            self.assertIn(hashlib.sha256(legacy).hexdigest(), self.inst.LEGACY_ENGINE_SKILL_SHA256, name)
+            (self.skills / name).mkdir(parents=True)
+            (self.skills / name / "SKILL.md").write_bytes(legacy)
+        self.update()
+        for name in others:
+            self.assertEqual((self.skills / name / "SKILL.md").read_bytes(),
+                             (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_bytes(), name)
+            self.assertEqual(len(list((self.tmp / ".wikibak/skills").glob(f"{name}-*"))), 1, name)
+
+    def test_update_refreshes_older_committed_recap(self):
+        old = (REPO / "tests/fixtures/legacy-ef4af76-recap-SKILL.md").read_bytes()  # recap as of ef4af76
+        (self.skills / "recap").mkdir(parents=True)
+        (self.skills / "recap/SKILL.md").write_bytes(old)
+        self.update()
+        self.assertEqual((self.skills / "recap/SKILL.md").read_bytes(),
+                         (self.inst.ENGINE / "extra-skills/recap/SKILL.md").read_bytes())
+        baks = list((self.tmp / ".wikibak/skills").glob("recap-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertEqual((baks[0] / "SKILL.md").read_bytes(), old)
+
+    def test_update_skips_user_edited_untagged_recap(self):
+        old = (REPO / "tests/fixtures/legacy-ef4af76-recap-SKILL.md").read_bytes() + b"\nmy edit\n"
+        (self.skills / "recap").mkdir(parents=True)
+        (self.skills / "recap/SKILL.md").write_bytes(old)
+        out = self.update()
+        self.assertEqual((self.skills / "recap/SKILL.md").read_bytes(), old)
+        self.assertIn("skip extra 'recap'", out)
+        self.assertFalse((self.tmp / ".wikibak/skills").exists())
 
     def test_update_installs_missing_core_skill(self):
         self.update(skills=["wiki-sync"])

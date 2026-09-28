@@ -1,4 +1,4 @@
-# PR #5 review fixes (2026-09-28). Each test fails on the pre-fix code.
+# PR #5 review fixes, rounds 1 and 2 (2026-09-28). Each test fails on the pre-fix code.
 import json
 import os
 import subprocess
@@ -95,6 +95,43 @@ def test_push_refuses_secret_even_under_project_memory(vault, pushable):  # noqa
     _assert_nothing_staged(vault, head)
 
 
+def _track(vault, rel, text="v1"):
+    p = vault / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    sh("git", "add", "-f", "--", rel, cwd=vault)
+    sh("git", "commit", "-qm", f"track {rel}", cwd=vault)
+    return p
+
+
+def test_push_accepts_tracked_file_that_now_matches_an_ignore_pattern(vault, pushable):  # noqa: F811
+    t = _track(vault, "memory/t.log")
+    (vault / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    t.write_text("v2", encoding="utf-8")
+    res = cl.push([str(t)], "m")
+    assert res["status"] == "ok" and _git(pushable, "log", "-1", "--name-only", "--format=").split() == ["memory/t.log"]
+
+
+def test_push_still_refuses_untracked_file_matching_that_pattern(vault, pushable):  # noqa: F811
+    _track(vault, "memory/t.log")
+    (vault / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    new = vault / "memory/new.log"
+    new.write_text("x", encoding="utf-8")
+    head = _git(vault, "rev-parse", "HEAD")
+    res = cl.push([str(new)], "m")
+    assert res["status"] == "stage_failed" and "memory/new.log" in res["detail"]
+    _assert_nothing_staged(vault, head)
+
+
+def test_push_refuses_tracked_secret_named_file(vault, pushable):  # noqa: F811
+    env = _track(vault, "cfg/.env")
+    env.write_text("TOKEN=changed", encoding="utf-8")
+    head = _git(vault, "rev-parse", "HEAD")
+    res = cl.push([str(env)], "m")
+    assert res["status"] == "stage_failed" and "cfg/.env" in res["detail"]
+    _assert_nothing_staged(vault, head)
+
+
 # --- 2. a file inside a nested repository is reported, not silently skipped ------------------------
 
 def test_push_file_in_nested_repo_is_stage_failed_and_unstages(vault, pushable):  # noqa: F811
@@ -112,26 +149,107 @@ def test_push_file_in_nested_repo_is_stage_failed_and_unstages(vault, pushable):
 
 # --- 3. stale-lock break never removes another waiter's fresh lock --------------------------------
 
-def test_stale_lock_race_keeps_the_other_waiters_fresh_lock(vault, pushable, monkeypatch):  # noqa: F811
+def _three_waiters(vault, monkeypatch, c_claims):
+    """B (the push under test) judged the lock stale. Before B renames it aside, A breaks it and takes a fresh
+    lock; before B renames A's lock back, C mkdirs the free path (and, when c_claims, also writes its owner)."""
     monkeypatch.setattr(cl.time, "sleep", lambda s: None)
     lock = vault / ".sync.lock"
     lock.mkdir()
     os.utime(lock, (1, 1))  # stale
-    real, raced = os.rename, []
+    real, step = os.rename, []
 
     def racing(src, dst):
-        if not raced and Path(src) == lock:
-            # Between our stale judgement and our rename, another waiter broke the stale lock and took a fresh one.
-            raced.append(1)
+        if Path(src) == lock and not step:
+            step.append("A")
             os.rmdir(lock)
             os.mkdir(lock)
+            assert cl._claim(lock, "A")
+        elif Path(dst) == lock and step == ["A"]:
+            step.append("C")
+            os.mkdir(lock)
+            if c_claims:
+                assert cl._claim(lock, "C")
         return real(src, dst)
 
     monkeypatch.setattr(cl.os, "rename", racing)
     res = cl.push([str(vault / "f0.txt")], "x", retries=2)
-    assert res["status"] == "locked"
-    assert lock.is_dir() and lock.stat().st_mtime > 1  # the other waiter's fresh lock survived
-    assert not list(vault.glob(".sync.lock.stale-*"))
+    assert step == ["A", "C"] and res["status"] == "locked"
+    return lock
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows rename never replaces an existing directory")
+def test_three_waiters_rename_back_onto_an_empty_fresh_dir_keeps_one_holder(vault, pushable, monkeypatch):  # noqa: F811
+    lock = _three_waiters(vault, monkeypatch, c_claims=False)
+    # Linux rename replaced C's still-empty dir with A's lock: C's claim must now fail, A still holds.
+    assert cl._claim(lock, "C") is False
+    assert cl._held(lock, "A") and not list(vault.glob(".sync.lock.stale-*"))
+    cl._release(lock, "C")
+    assert lock.exists()  # never released by a non-owner
+    cl._release(lock, "A")
+    assert not lock.exists()
+
+
+def test_three_waiters_failed_rename_back_leaves_the_aside_lock(vault, pushable, monkeypatch):  # noqa: F811
+    lock = _three_waiters(vault, monkeypatch, c_claims=True)
+    # C holds the path; A's lock could not go back (a held lock is never empty) and stays aside, untouched.
+    assert cl._held(lock, "C")
+    [aside] = vault.glob(".sync.lock.stale-*")
+    assert (aside / cl.OWNER).read_text(encoding="utf-8") == "A"
+    assert not cl._held(lock, "A")  # so A's push bails at its ownership re-check (next test)
+
+
+def test_push_that_lost_its_lock_stages_nothing(vault, pushable, monkeypatch):  # noqa: F811
+    real_claim = cl._claim
+
+    def claim_then_lose(lock, token):
+        ok = real_claim(lock, token)
+        os.rename(lock, lock.with_name(".sync.lock.stale-x"))  # a stale-breaker moved our fresh lock aside
+        os.mkdir(lock)
+        real_claim(lock, "C")  # and a third waiter took the path
+        return ok
+
+    monkeypatch.setattr(cl, "_claim", claim_then_lose)
+    (vault / "handoffs").mkdir()
+    (vault / "handoffs/k.md").write_text("hand", encoding="utf-8")
+    head = _git(vault, "rev-parse", "HEAD")
+    assert cl.push([str(vault / "handoffs/k.md")], "m")["status"] == "locked"
+    assert _git(vault, "diff", "--cached", "--name-only") == "" and _git(vault, "rev-parse", "HEAD") == head
+    assert cl._held(vault / ".sync.lock", "C")  # C's lock is not released by the loser
+
+
+def test_held_lock_is_never_empty_and_is_released(vault, pushable, monkeypatch):  # noqa: F811
+    seen = []
+    real_add = cl.lib.RUN
+
+    def spy(cmd, *a, **k):
+        if "add" in cmd:
+            seen.append(sorted(p.name for p in (vault / ".sync.lock").iterdir()))
+        return real_add(cmd, *a, **k)
+
+    monkeypatch.setattr(cl.lib, "RUN", spy)
+    (vault / "handoffs").mkdir()
+    (vault / "handoffs/k.md").write_text("hand", encoding="utf-8")
+    assert cl.push([str(vault / "handoffs/k.md")], "m")["status"] == "ok"
+    assert seen == [sorted([cl.OWNER, ".gitignore"])] and not (vault / ".sync.lock").exists()
+
+
+def test_held_lock_is_invisible_to_git_status(vault, pushable, monkeypatch):  # noqa: F811
+    # The owner file makes a held lock non-empty; without its own ignore file an `add -A` elsewhere
+    # (Obsidian-git) would commit it, and a leftover `.sync.lock.stale-*` dir would show up for good.
+    status = []
+    real = cl.lib.RUN
+
+    def spy(cmd, *a, **k):
+        if "add" in cmd and not status:
+            status.append(subprocess.run(["git", "-C", str(vault), "status", "--porcelain", "--untracked-files=all"],
+                                         capture_output=True, text=True, encoding="utf-8").stdout)
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(cl.lib, "RUN", spy)
+    (vault / "handoffs").mkdir()
+    (vault / "handoffs/k.md").write_text("hand", encoding="utf-8")
+    assert cl.push([str(vault / "handoffs/k.md")], "m")["status"] == "ok"
+    assert status and ".sync.lock" not in status[0]
 
 
 def test_stale_lock_is_broken_without_leftovers(vault, pushable, monkeypatch):  # noqa: F811

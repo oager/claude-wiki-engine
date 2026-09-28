@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: tiered-build
 description: "Three-model build pipeline routing design, spec/verification, and implementation to cost-appropriate models with hard gates (Fable design, Opus spec+verify, Sonnet build). Trigger on 'tiered build', 'run my pipeline', 'design-then-build', /tiered-build, or handing over a design doc to take to the next phase."
 ---

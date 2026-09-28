@@ -1,14 +1,13 @@
 ---
-source: claude-wiki-engine
 name: recap
-description: Generate a paste-ready handoff markdown file summarizing the current session's work. For handing off to a session on another machine, or any cold session that needs to catch up on what this one has been doing. Saves the file to Downloads so it's easy to paste.
+description: Generate a paste-ready handoff markdown file summarizing the current session's work. For sharing with Ubuntu/Linux Claude (CryptoDesk side) or any other Claude session that needs to catch up on what Windows Claude has been doing. Saves the file to Downloads so it's easy to paste.
 disable-model-invocation: true
 model: sonnet
 ---
 
 # /recap — session handoff document
 
-Generates a handoff markdown the user can drop into another Claude session (most commonly a session on another machine, but works for any cold session that needs today's context).
+Generates a handoff markdown the user can drop into another Claude session (most commonly the Ubuntu Claude running alongside CryptoDesk, but works for any cold session that needs today's context).
 
 ## Flow
 
@@ -17,21 +16,21 @@ Generates a handoff markdown the user can drop into another Claude session (most
 Pull from these in order:
 
 ```
-Read <vault>/projects/<project-slug>/memory/SESSION_RESUME.md
-Read <project>/state/<current-state-file>.md
+Read ~/.claude/projects/C--Users-oager-claude-workspaces/memory/SESSION_RESUME.md
+Read C:\Users\oager\claude-workspaces\cryptobot\state\current_setups.md
 ```
 
-Then get recent project activity to see what's been pushed:
+Then get recent cryptobot activity to see what's been pushed:
 
 ```
-Bash: cd "<project-repo>" && git log --oneline -10
-Bash: cd "<related-repo>" && git log --oneline -5 --all
+Bash: cd "$USERPROFILE/claude-workspaces/cryptobot" && git log --oneline -10
+Bash: cd "$USERPROFILE/tradingview-mcp" && git log --oneline -5 --all
 ```
 
 If this session has notable debugging findings that haven't been committed yet, also peek at recent memory changes:
 
 ```
-Bash: ls -lt "<vault>/projects/<project-slug>/memory/" | head -5
+Bash: ls -lt "$USERPROFILE/.claude/projects/C--Users-oager-claude-workspaces/memory/" | head -5
 ```
 
 ### 2. Check live state (optional, only if TV is up)
@@ -49,7 +48,7 @@ Note fired alerts and what happened next. This is valuable context for the recap
 Aim for **100-200 lines of markdown**, paste-friendly, readable in 2 minutes. Use this skeleton:
 
 ```markdown
-# Recap from this session session — [YYYY-MM-DD]
+# Recap from Windows Claude session — [YYYY-MM-DD]
 
 **TL;DR**: [one sentence — what's the most important thing to know]
 
@@ -76,7 +75,7 @@ That's the full context. What follows is the highlight reel.
 
 [Table with symbol, side, zone, entry, SL, TP1/2/3, status]
 
-[Call out which are the other session-scope (BTC/ETH) vs Windows-scope (alts)]
+[Call out which are CryptoDesk-scope (BTC/ETH) vs Windows-scope (alts)]
 
 ## Alert book
 
@@ -102,7 +101,7 @@ Copy the prose style from `Downloads\windows_claude_recap_2026-04-18.md` — tha
 ### 4. Save to Downloads with dated filename
 
 ```
-Write <downloads>/session_recap_YYYY-MM-DD.md
+Write C:\Users\oager\Downloads\windows_claude_recap_YYYY-MM-DD.md
 ```
 
 Use today's date. If a recap with today's date already exists, append a `-2`, `-3`, etc. suffix rather than overwriting (user may want to compare versions).
@@ -112,7 +111,7 @@ Use today's date. If a recap with today's date already exists, append a `-2`, `-
 One-line confirmation:
 
 ```
-Recap saved to <downloads>/session_recap_YYYY-MM-DD.md
+Recap saved to C:\Users\oager\Downloads\windows_claude_recap_YYYY-MM-DD.md
 Paste that into Ubuntu Claude or any cold session. [N] lines, [token estimate] tokens.
 ```
 
@@ -134,11 +133,11 @@ Paste that into Ubuntu Claude or any cold session. [N] lines, [token estimate] t
 
 ## Don't
 
-- **Don't write the recap into the project repo.** It's an ephemeral handoff doc, not a committed artifact. Downloads is the right place.
+- **Don't write the recap into the cryptobot repo.** It's an ephemeral handoff doc, not a committed artifact. Downloads is the right place.
 - **Don't commit anything as part of /recap.** Reading and summarizing only. Any commits should be done explicitly via `/ship` or `/sync`.
 - **Don't duplicate the full active_setups memory file.** The recap is a summary + pointer, not a copy.
 - **Don't write private info** (cookies, session IDs, exchange API keys) into the recap — it's going to be pasted into another session and might end up in logs or exports.
 
 ## Common follow-up
 
-After saving, user typically opens the file, pastes content into the target session, and continues there. If the target session is set up with the same `CLAUDE.md` discipline, it can just `git pull` the the project repo and be caught up — the recap is bridging context, not replacing it.
+After saving, user typically opens the file, pastes content into the target session, and continues there. If the target session is set up with the same `CLAUDE.md` discipline, it can just `git pull` the cryptobot repo and be caught up — the recap is bridging context, not replacing it.

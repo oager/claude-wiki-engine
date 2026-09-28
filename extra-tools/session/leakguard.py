@@ -9,7 +9,7 @@ import bisect
 import unicodedata
 from pathlib import Path
 
-_ZERO_WIDTH = dict.fromkeys(map(ord, "​‌‍⁠﻿"))
+_ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
 
 
 def _norm(s):

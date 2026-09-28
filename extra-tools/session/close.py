@@ -295,12 +295,53 @@ def _under_project_memory(rel):
     return len(parts) >= 4 and parts[0] == "projects" and parts[2] == "memory"
 
 
+OWNER = "owner"  # file inside the lock dir: a held lock is never empty, so no rename can land on top of it
+LOCK_IGNORE = ".gitignore"  # "*" inside the lock dir: a held or leftover lock never shows in `git status`
+
+
+def _claim(lock, token):
+    """After mkdir: mark the lock ours. O_EXCL fails when a stale-breaker's rename-back swapped another holder's
+    lock in over our still-empty dir (Linux rename replaces an EMPTY directory): then it is not ours."""
+    try:
+        fd = os.open(lock / OWNER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token)
+    try:
+        (lock / LOCK_IGNORE).write_text("*\n", encoding="utf-8")
+    except OSError:
+        pass  # cosmetic: the lock still works, it just shows as untracked
+    return True
+
+
+def _held(lock, token):
+    try:
+        return (lock / OWNER).read_text(encoding="utf-8") == token
+    except OSError:
+        return False
+
+
+def _release(lock, token):
+    """Remove the lock only while it still carries our owner token."""
+    if not _held(lock, token):
+        return
+    try:
+        (lock / OWNER).unlink()
+        (lock / LOCK_IGNORE).unlink(missing_ok=True)
+        lock.rmdir()
+    except OSError:
+        pass
+
+
 def _break_stale(lock, st):
     """Remove a lock judged stale from `st`, unless another waiter replaced it with a fresh one meanwhile.
 
     rmdir-by-name would race: two waiters both see the stale lock, the first rmdirs + mkdirs its own, the second
     then rmdirs the first one's FRESH lock. Instead rename it aside (atomic, one winner), then check the renamed
     dir is still the one judged stale (inode + mtime: inodes are reused at once after rmdir); if not, put it back.
+    A put-back that fails (the path is taken again: a held lock is never empty, so rename refuses) leaves the
+    aside dir where it is: it is someone's lock, never ours to delete.
     """
     aside = lock.with_name(f"{lock.name}.stale-{os.getpid()}-{secrets.token_hex(4)}")
     try:
@@ -312,6 +353,8 @@ def _break_stale(lock, st):
         if (now.st_ino, now.st_mtime_ns) != (st.st_ino, st.st_mtime_ns):
             os.rename(aside, lock)  # someone's fresh lock: give it back and keep waiting
             return False
+        (aside / OWNER).unlink(missing_ok=True)
+        (aside / LOCK_IGNORE).unlink(missing_ok=True)
         aside.rmdir()
     except OSError:
         return False
@@ -328,10 +371,10 @@ def push(files, message, retries=15):
         return {"status": "local"}  # a plain vault: the files are written; there is nothing to commit or push
     v = lib.vault().resolve()
     lock = v / ".sync.lock"
+    token = f"{os.getpid()} {secrets.token_hex(8)}"
     for _ in range(retries):
         try:
             lock.mkdir()
-            break
         except FileExistsError:
             try:
                 st = lock.stat()
@@ -339,7 +382,10 @@ def push(files, message, retries=15):
                     continue
             except OSError:
                 pass
-            time.sleep(2)
+        else:
+            if _claim(lock, token):
+                break
+        time.sleep(2)
     else:
         return {"status": "locked"}
     try:
@@ -402,9 +448,11 @@ def push(files, message, retries=15):
         existing = [r for r in rel if (v / r).exists()]
         bad = []
         for r in existing:
-            if _secret_shaped(r):
+            if _secret_shaped(r):  # tracked or not
                 bad.append(r)
                 continue
+            if g("ls-files", "--error-unmatch", "--", r)[0] == 0:
+                continue  # tracked: a later ignore pattern does not make an already-committed file a leak
             rc = g("check-ignore", "-q", "--no-index", "--", r, literal=False)[0]
             if rc not in (0, 1):  # cannot tell: refuse rather than force-add blind
                 bad.append(f"{r} (ignore state unknown, rc={rc})")
@@ -412,6 +460,8 @@ def push(files, message, retries=15):
                 bad.append(r)
         if bad:
             return done("stage_failed", detail="ignored or secret-shaped files are not accepted: " + ", ".join(bad))
+        if not _held(lock, token):  # a stale-breaker moved our fresh lock aside and a third waiter took the path
+            return {"status": "locked"}
         rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
@@ -461,10 +511,7 @@ def push(files, message, retries=15):
                     sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing())
         return {**res, "stash": stash} if stash else res
     finally:
-        try:
-            lock.rmdir()
-        except OSError:
-            pass
+        _release(lock, token)
 
 
 def write_repo_handoff(cwd, project=None):

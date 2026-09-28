@@ -55,8 +55,9 @@ Last updated: 2026-09-28
 - `push` refuses ignored and secret-shaped files (2026-09-28, security): `add -f` force-adds any listed file, so an
   explicitly listed `.credentials.json` or `.env` would be committed. Before staging, a file whose name is
   secret-shaped (`.credentials.json`, `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`) is refused
-  whatever its ignore state, and a file `git check-ignore --no-index` calls ignored is refused unless it is under
-  `projects/<x>/memory/` (the only place `-f` is meant for). All-or-nothing, `stage_failed` naming the path.
+  whatever its ignore state, tracked or not; an UNTRACKED file `git check-ignore --no-index` calls ignored is refused
+  unless it is under `projects/<x>/memory/` (the only place `-f` is meant for). A tracked file (`ls-files
+  --error-unmatch`) skips the ignore check: a pattern added later must not block an already-committed file. All-or-nothing, `stage_failed` naming the path.
   check-ignore runs without `--literal-pathspecs` (it rejects that flag with rc 128; it takes plain pathnames, no
   glob magic); an rc other than 0/1 refuses too.
 - `push` verifies the index after `add` (2026-09-28): a file inside a nested repository is silently not staged
@@ -66,6 +67,14 @@ Last updated: 2026-09-28
   renamed dir's inode + mtime still match the lock judged stale; if not (another waiter already replaced it with a
   fresh lock), it is renamed back and the wait goes on. rmdir-by-name let a second waiter delete the first one's
   fresh lock.
+- A held lock is never empty: after `mkdir` the holder creates `.sync.lock/owner` (pid + nonce) with O_EXCL. Linux
+  `rename` replaces an EMPTY directory, so without it a rename-back could land on a third waiter's fresh lock (two
+  holders); now that waiter's O_EXCL fails and it keeps waiting. A rename-back that fails (the path is held) leaves
+  the `.sync.lock.stale-*` dir in place: it is someone's lock, never deleted. The holder re-checks its owner token
+  before staging (a lock moved aside that way means another holder took the path: status `locked`, nothing staged),
+  and release removes `owner` then the dir only while `owner` is still its own.
+  The lock dir also carries a `.gitignore` (`*`), so a held or leftover lock never shows in `git status` and an
+  `add -A` elsewhere (Obsidian-git) never commits it.
 - Vault state (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`) is located with `git rev-parse --git-path`, so a
   worktree or `.git`-file vault is checked; if git fails, `<vault>/.git/<name>` as before.
 

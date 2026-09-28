@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: ripple
 description: Consumer-impact sweep when data or interfaces change. Use whenever new data lands (table, column, endpoint, collector, metric, feed) or existing data changes shape/semantics/path/cadence — by us or by Rich — and we need to know which surfaces (portals, dashboards, analyst, deepdesk, LLM prompts, digests, crons, scorecards, docs/memory) break, go stale, or could benefit. Also for "what did Rich change?" (git divergence, live uncommitted WIP, cron diffs). Modes — forward (new data → opportunity), reverse (changed data → blast radius), discover (partner changes). Report-first gated impact table, then executes picked rows. Trigger on "who reads/uses this", "what breaks if…", "blast radius", "ripple", any schema/rename/shape change — even when no portal or consumer is named explicitly. NOT for repo onboarding (/repo-scan) or post-bugfix hardening (/error-harden).
 type: skill

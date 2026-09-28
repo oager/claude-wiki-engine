@@ -92,6 +92,20 @@ LEGACY_ENGINE_SKILL_SHA256 = {
     "5d6254cb9517719e88a28f4e4fd56a214ad673107458ab8034192046db4cdbc6",  # skills/doc-review/SKILL.md @26d1faa
     "3d317ea8ef76bbd57f5315be8ec307d5bdf47472c34e7b60d03defa3be3a1fa9",  # skills/doc-review/SKILL.md @aed4b19
     "fcaadce02a21f6c803667f34ab8e1c56be4134991cdddf993515743b571315ff",  # skills/wiki-sync/SKILL.md @377a75a
+    # every committed version of the other extras before they were tagged
+    "b599f6c10046577fe52d93f2877289f6ca3c34f6141c36c70f8f2bf5c59ab04b",  # extra-skills/error-harden @612edda
+    "8acd43cb411fab4db68d9d82344e625b848bf2f2ceb157bab0e491eb22e34a42",  # extra-skills/karpathy-guidelines @eda2f4a
+    "6a96000f9d26ced6bed2afb1fc5918b8591746b21a2ffbe89a588a5ec2a5ca0a",  # extra-skills/recap @63a11f8
+    "ac7773bc419ca7cf611b11e9be6f11610bde6042946da9352036dbe98e529d2c",  # extra-skills/recap @ef4af76
+    "3e3c704f7d864e6180c3e18c2be3143aa30391c6256392f3fdfe0e17a0ad5542",  # extra-skills/recap @612edda
+    "65a17c49a96959e48a6c44ed43ce221598d950a9553caa375eb4ac312695ec9b",  # extra-skills/regression @612edda
+    "307fdb866b43f447f3e803defaa22defcd6e9d84ffcdea49d492553b207cbc42",  # extra-skills/ripple @612edda
+    "9ee435cfee0cb49bd0fa009c2bf2f54496698d721a279718131596d7b4b4a4ce",  # extra-skills/tiered-build @612edda
+    "96262c63c15c6258e8d1fbac013ef77c1e01928b778c5a1cdebb697472f9e6a7",  # extra-skills/tv @c3c7de8
+    "f2e75a032cc39d8b53bde881bcaf24c04336312b95c56b627e6eb7684f5885d4",  # extra-skills/tv @8923084
+    "f592f40479da711b404c60261eaa43ac07a4eb862b6708fe744461f2396e62a4",  # extra-skills/tv @63a11f8
+    "222accd9ffe9d4f41134cd1183fd8b44418053d539031f358572bb634ae7a902",  # extra-skills/tv @ef4af76
+    "1219b2f905f7512a539f19d250426102aa146f5f8da8cf1f6c2d30d533ceb5c4",  # extra-skills/tv @612edda
 }
 SESSION_START = "<!-- session-handoff:start -->"
 SESSION_END = "<!-- session-handoff:end -->"
@@ -243,14 +257,32 @@ def read_text_keep_eol(path: Path) -> tuple[str, str]:
     return text, eol
 
 
+def block_span(text: str, start: str, end: str) -> tuple[int, int] | None | bool:
+    """(start index, index just past the end marker) of the first well-formed block; None when neither marker is
+    present; False when the markers are unpaired or out of order (end before start), which no edit may touch."""
+    i = text.find(start)
+    j = text.find(end, i + len(start)) if i >= 0 else -1
+    if i >= 0 and j >= 0:
+        return i, j + len(end)
+    return None if (i < 0 and end not in text) else False
+
+
+def _markers_broken(target: Path, start: str) -> None:
+    print(f"  [warn] {target}: the {start} block markers are unpaired or out of order - left unchanged; "
+          "fix them by hand and re-run")
+
+
 def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: str = SENTINEL_END):
     """Insert/replace a sentinel-bounded block. Edits the real file (follows symlink)."""
     target = claude_md.resolve()
     managed = f"{start}\n{block.strip()}\n{end}"
     if target.exists():
         text, eol = read_text_keep_eol(target)
-        if start in text and end in text:
-            new = text.split(start)[0] + managed + text.split(end, 1)[1]
+        span = block_span(text, start, end)
+        if span is False:
+            return _markers_broken(target, start)
+        if span:
+            new = text[:span[0]] + managed + text[span[1]:]
         else:
             sep = "" if text.endswith("\n") else "\n"
             new = text + sep + "\n" + managed + "\n"
@@ -260,25 +292,31 @@ def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: 
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
 
 
-def has_block(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END) -> bool:
+def block_state(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END) -> str:
+    """'present', 'absent' (also: no/unreadable file) or 'broken' (see block_span)."""
     target = claude_md.resolve()
     if not target.is_file():
-        return False
+        return "absent"
     try:
         text, _ = read_text_keep_eol(target)
     except (OSError, UnicodeDecodeError):
-        return False
-    return start in text and end in text
+        return "absent"
+    span = block_span(text, start, end)
+    return "broken" if span is False else "present" if span else "absent"
 
 
 def remove_block(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END):
     """Remove a sentinel-bounded block (inverse of inject_block, CRLF-safe); no-op when it is absent."""
-    if not has_block(claude_md, start, end):
-        return
     target = claude_md.resolve()
+    if not target.is_file():
+        return
     text, eol = read_text_keep_eol(target)
-    before, rest = text.split(start, 1)
-    after = rest.split(end, 1)[1]
+    span = block_span(text, start, end)
+    if span is False:
+        return _markers_broken(target, start)
+    if span is None:
+        return
+    before, after = text[:span[0]], text[span[1]:]
     if after.startswith("\n"):   # the newline inject_block put after the end marker
         after = after[1:]
     if before.endswith("\n\n"):  # the blank line inject_block put before the start marker
@@ -311,11 +349,18 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
+_RUNTIME_DIRS = {"__pycache__", ".pytest_cache"}  # written by running the code, never a user change
+
+
+def _tree_files(root: Path) -> list[Path]:
+    return sorted(p.relative_to(root) for p in root.rglob("*")
+                  if p.is_file() and not _RUNTIME_DIRS & set(p.relative_to(root).parts))
+
+
 def _same_tree(a: Path, b: Path) -> bool:
     """True when two dirs hold the same files with the same bytes, so replacing one with the other loses nothing."""
     try:
-        fa = sorted(p.relative_to(a) for p in a.rglob("*") if p.is_file())
-        fb = sorted(p.relative_to(b) for p in b.rglob("*") if p.is_file())
+        fa, fb = _tree_files(a), _tree_files(b)
         return fa == fb and all(_same_file(a / r, b / r) for r in fa)
     except OSError:
         return False
@@ -350,7 +395,7 @@ def session_conflict_note(conflicts: list[str], update: bool = False, removed_bl
     session skills, tools/session, the CLAUDE.md block): /preflight and /sync only work as a set."""
     names = " and ".join(f"skills/{n}" for n in conflicts)
     verb = "is your own skill" if len(conflicts) == 1 else "are your own skills"
-    what = ("tools/session + CLAUDE.md block" if update
+    what = ("no refresh of preflight/sync, no tools/session, no CLAUDE.md block" if update
             else "engine preflight + sync skills, tools/session, CLAUDE.md block")
     note = (f"skip the session handoff system as a whole ({what}): {names} {verb}, not the engine's, and the "
             f"engine's /preflight and /sync only work together with their tools and block, which would send "
@@ -381,8 +426,9 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
         plan.note("keep tools/session (engine copy present; --update refreshes it)")
     else:
         plan.add("copy", f"extra-tools/session -> {dst_tools}",
-                 lambda s=src_tools, d=dst_tools, b=base: (d.parent.mkdir(parents=True, exist_ok=True),
-                                                            _versioned_backup(b, d), copy_tree(s, d)))
+                 lambda s=src_tools, d=dst_tools, b=base: (
+                     d.parent.mkdir(parents=True, exist_ok=True),
+                     None if not d.exists() or _same_tree(s, d) else _versioned_backup(b, d), copy_tree(s, d)))
     hand = base / "handoffs"
     for name in ("_TEMPLATE.md", "_USER.template.md"):
         s, d = ENGINE / "templates" / "handoffs" / name, hand / name
@@ -740,15 +786,22 @@ def do_update(cfg: dict):
         block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
         plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
                  lambda c=cmd, b=block: inject_block(c, b))
-    for name in EXTRA_SKILLS:
-        src, dst = ENGINE / "extra-skills" / name, skills_real / name
-        if dst.exists() and src.exists():
-            plan_skill_refresh(plan, base, name, src, dst, "extra ", f"install.py --extras {name}")
-    # an --update keeps each preflight/sync as it is (engine copies stay engine, the user's stay theirs)
+    # An --update never changes who owns preflight/sync. While either is the user's own, the engine's session
+    # skills are left exactly as they are: a refresh could turn a working older /preflight (which needed no
+    # tools) into one that calls tools/session, which the conflict path withholds.
     engine_session = any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS)
     conflicts = session_conflicts(skills_real, set())
+    for name in EXTRA_SKILLS:
+        src, dst = ENGINE / "extra-skills" / name, skills_real / name
+        if name in SESSION_EXTRAS and conflicts:
+            continue  # covered by the one conflict note below
+        if dst.exists() and src.exists():
+            plan_skill_refresh(plan, base, name, src, dst, "extra ", f"install.py --extras {name}")
     cmd = base / "CLAUDE.md"
-    stale = bool(conflicts) and cfg["claude_md"] and has_block(cmd, SESSION_START, SESSION_END)
+    state = block_state(cmd, SESSION_START, SESSION_END) if conflicts and cfg["claude_md"] else "absent"
+    stale = state == "present"
+    if state == "broken":
+        plan.note(f"CLAUDE.md: session-handoff markers are unpaired or out of order - left unchanged ({cmd})")
     if conflicts and (engine_session or stale):
         plan.note(session_conflict_note(conflicts, update=True, removed_block=stale))
         if stale:  # an earlier install wired the block next to the user's own skill: take it back out
