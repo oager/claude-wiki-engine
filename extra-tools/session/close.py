@@ -294,10 +294,22 @@ def push(files, message, retries=15):
         return {"status": "locked"}
     try:
         def g(*args, t=8):
-            return lib.RUN(["git", "-C", str(v), *args], timeout=t)
+            # --literal-pathspecs: without it git treats *, ?, [...] in a listed path as its OWN glob magic
+            # (independent of the shell), so an unmatched shell glob like "$V/*" reaches git as a literal
+            # wildcard and `add -f` sweeps in ignored files (.credentials.json, the .live registry) and
+            # other sessions' half-writes. Security fix, 2026-09-28.
+            return lib.RUN(["git", "--literal-pathspecs", "-C", str(v), *args], timeout=t)
 
-        rel = asked = [Path(f).resolve().relative_to(v).as_posix() for f in files]
-        # Security: a directory (above all the vault root) would silently commit ignored files
+        resolved, outside = [], []
+        for f in files:
+            try:
+                resolved.append(Path(f).resolve().relative_to(v).as_posix())
+            except ValueError:  # a symlink (or any path) that resolves outside the vault
+                outside.append(f)
+        if outside:
+            return {"status": "stage_failed", "detail": "outside the vault: " + ", ".join(outside)}
+        rel = asked = resolved
+        # Security: a directory (especially the vault root) would silently commit ignored files
         # (.credentials.json, projects/**) and other sessions' half-writes. push accepts files only.
         dirs = [r for r in asked if r in ("", ".") or (v / r).is_dir()]
         if dirs:
@@ -309,8 +321,16 @@ def push(files, message, retries=15):
             return res
         # The session registry is per machine: never committed, whether named directly or inside a listed folder.
         rel = [r for r in rel if r != LIVE and not r.startswith(LIVE + "/")]
+
+        def tracked_as_one_file(r):
+            # A missing path is accepted only when git still tracks it as exactly this one file. A deleted
+            # TRACKED DIRECTORY (e.g. a removed handoffs/inbox) would otherwise pass (ls-files matches every
+            # file under the prefix) and `add`/`commit` would stage the deletion of everything under it.
+            rc, out, _ = g("ls-files", "--", r)
+            return rc == 0 and out.splitlines() == [r]
+
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
-        rel = [r for r in rel if (v / r).exists() or g("ls-files", "--error-unmatch", "--", r)[0] == 0]
+        rel = [r for r in rel if (v / r).exists() or tracked_as_one_file(r)]
         dropped = [r for r in asked if r not in rel]  # never merged into `missing`: /sync retries on `missing`
 
         def done(status, **extra):
