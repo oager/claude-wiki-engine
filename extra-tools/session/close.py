@@ -6,8 +6,9 @@
     close.py push --message M --files F...     locked, stage-only-these-files vault push
     close.py note --to K --from F --subject S [--file P]   write + push a vault inbox note
     close.py inbox-done --files P...           move triaged inbox notes to done/ (stage, don't push)
+    close.py repo-handoff                      write <repo>/.claude/HANDOFF.md (shared projects, leak-guarded)
 
-Always exits 0 and prints one JSON object. Spec: ~/.claude/docs/specs/2026-09-27-preflight-sync-redesign.md
+Always exits 0 and prints one JSON object. Design: the "Session handoff" section of the claude-wiki-engine README.
 """
 import argparse
 import datetime as dt
@@ -162,13 +163,16 @@ def collect_close(cwd, project=None):
     ids = lib.load_self_ids()
     (lib.vault() / "handoffs").mkdir(parents=True, exist_ok=True)
     p = lib.handoff_path(ident["key"])
-    profile = lib.parse_handoff(p.read_text(encoding="utf-8"))["profile"] if p.is_file() else {}
+    h = lib.parse_handoff(p.read_text(encoding="utf-8")) if p.is_file() else {"profile": {}, "meta": {}}
+    profile = h["profile"]
     root = ident["root"]
     is_repo = lib.git(root, "rev-parse", "--git-dir") is not None
+    notes = inbox.list_notes(ident["key"]) + inbox.list_notes("_user")
     return {
         "identity": ident,
         "handoff": {"path": str(p), "exists": p.is_file(),
                     "size_kb": round(p.stat().st_size / 1024, 1) if p.is_file() else 0},
+        "handoff_updated": h["meta"].get("updated"),  # the concurrent-merge check compares this with /preflight's
         "legacy": None if p.is_file() else lib.find_legacy(root, cwd),
         "git": git_close(root, profile.get("gh") or ident["repo"]) if is_repo else None,
         "running": running_work(root),
@@ -177,7 +181,8 @@ def collect_close(cwd, project=None):
                          if profile.get("shared") and is_repo else None),
         "repo_sha": lib.git(root, "rev-parse", "--short", "HEAD") if is_repo else None,
         "vault_sha": lib.git(lib.vault(), "rev-parse", "--short", "HEAD"),  # recorded BEFORE this session's push
-        "inbox_untriaged": len(inbox.list_notes(ident["key"])) + len(inbox.list_notes("_user")),
+        "inbox_untriaged": len(notes),
+        "inbox_notes": [n["path"] for n in notes],
     }
 
 
@@ -236,8 +241,8 @@ def trim(path, today=None, keep_days=14):
 def push(files, message, retries=15):
     """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
 
-    The vault is a shared working tree (every session plus Obsidian-git): never `add -A`, never
-    reset/force. See memory/concepts/multi_session_vault_git.md.
+    The vault is a shared working tree (every session plus any auto-commit tool): never `add -A`, never
+    reset/force.
     """
     if not lib.vault_is_git():
         return {"status": "local"}  # a plain vault: the files are written; there is nothing to commit or push
@@ -277,11 +282,18 @@ def push(files, message, retries=15):
         rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
-        if g("diff", "--cached", "--quiet", "--", *rel)[0] != 0:
+
+        def missing():
+            return [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
+
+        new = g("diff", "--cached", "--quiet", "--", *rel)[0] != 0
+        if new:
             rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
             if rc != 0:
                 return done("commit_failed", detail=(err or out)[-300:])
-        elif g("rev-list", "--count", "@{u}..HEAD")[1].strip() in ("", "0"):
+        if g("rev-parse", "--abbrev-ref", "@{u}")[0] != 0:  # a git vault without a remote: nothing to pull or push
+            return done("committed_local", sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing())
+        if not new and g("rev-list", "--count", "@{u}..HEAD")[1].strip() in ("", "0"):
             return done("nothing")  # nothing new AND nothing left unpushed by an earlier failed run
         stash = None
         for _attempt in range(2):
@@ -301,9 +313,8 @@ def push(files, message, retries=15):
         else:
             res = done("push_failed", detail=(err or out)[-300:])
             return {**res, "stash": stash} if stash else res
-        missing = [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
         res = done("autostash_conflict" if stash else "ok",
-                    sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing)
+                    sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing())
         return {**res, "stash": stash} if stash else res
     finally:
         try:
@@ -318,8 +329,13 @@ def write_repo_handoff(cwd, project=None):
     if not p or not p.is_file():
         return {"written": False, "reason": "no project handoff to publish"}
     names = lib.load_self_ids().get("names") or ["unknown"]
-    needles = leakguard.needles(lib.user_file()["profile"], names=False)
-    return repohandoff.write(ident["root"], p.read_text(encoding="utf-8"), names[0], needles)
+    needles = leakguard.needles(lib.user_file()["profile"], names=False)  # the author name is public by design
+    res = repohandoff.write(ident["root"], p.read_text(encoding="utf-8"), names[0], needles)
+    if res["written"]:  # collaborators see the file only once it is committed and not ignored
+        root = ident["root"]
+        res["uncommitted"] = bool(lib.git(root, "status", "--porcelain", "--", repohandoff.REL))
+        res["ignored"] = lib.git(root, "check-ignore", "-q", repohandoff.REL) is not None  # rc 0 = ignored
+    return res
 
 
 def main(argv=None):
@@ -347,7 +363,7 @@ def main(argv=None):
         elif a.cmd == "push":
             res = push(a.files, a.message)
         elif a.cmd == "note":
-            body = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
+            body = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.buffer.read().decode("utf-8", "replace")
             p = inbox.write_note(a.to, a.from_, a.subject, body)
             res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
         elif a.cmd == "inbox-done":

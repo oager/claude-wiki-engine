@@ -35,6 +35,8 @@ def vault_state():
              or any(line[:2] in UNMERGED for line in out.splitlines()))
     if stuck:
         return {"pull": "skipped", "stuck_merge": True}
+    if lib.git(v, "rev-parse", "--abbrev-ref", "@{u}") is None:  # a git vault without a remote: nothing to pull
+        return {"pull": "skipped (no upstream)", "stuck_merge": stuck}
     rc, out, err = lib.RUN(["git", "-C", v, "pull", "--ff-only", "-q"], timeout=20)
     if rc == 0:
         return {"pull": "ok", "stuck_merge": False}
@@ -305,28 +307,43 @@ def command_check(c):
     return _check("user", "command", name, "warn" if loud else "ok", detail, loud=loud, count=count)
 
 
+def _user_check(c, v, ids):
+    kind = c.get("kind")
+    if kind == "command":
+        return command_check(c)
+    if kind == "queue":
+        r = queue_check({**c, "file": lib.expand(c["file"])}, v)
+        r["loud"] = r.get("count", 0) > c.get("loud_over", 0)
+        return r
+    if kind == "log":
+        return log_check({**c, "path": lib.expand(c["path"])}, v)
+    if kind == "metric":
+        return metric_check({**c, "file": lib.expand(c["file"])}, v)
+    if kind == "service":
+        return service_check(c, ids, "user")
+    if kind == "health":
+        return health_check(c, ids)
+    if kind == "port":
+        return port_check(c, ids)
+    return _check("user", kind or "?", c.get("name", "?"), "unknown", f"unknown check kind: {kind}")
+
+
 def user_checks(profile, ids):
-    """_USER.md Profile checks: they run for every project; paths may use <vault>."""
+    """_USER.md Profile checks: they run for every project; paths may use <vault>.
+    A malformed check is one `unknown` entry, never a crashed briefing."""
     v, res = lib.vault(), []
-    for c in profile.get("checks") or []:
-        kind = c.get("kind")
-        if kind == "command":
-            r = command_check(c)
-        elif kind == "queue":
-            r = queue_check({**c, "file": lib.expand(c["file"])}, v)
-            r["loud"] = r.get("count", 0) > c.get("loud_over", 0)
-        elif kind == "log":
-            r = log_check({**c, "path": lib.expand(c["path"])}, v)
-        elif kind == "metric":
-            r = metric_check({**c, "file": lib.expand(c["file"])}, v)
-        elif kind == "service":
-            r = service_check(c, ids, "user")
-        elif kind == "health":
-            r = health_check(c, ids)
-        elif kind == "port":
-            r = port_check(c, ids)
-        else:
-            r = _check("user", kind or "?", c.get("name", "?"), "unknown", f"unknown check kind: {kind}")
+    checks = profile.get("checks") or []
+    if not isinstance(checks, list):
+        return [_check("user", "?", "checks", "unknown", "bad checks: not a list", loud=False)]
+    for c in checks:
+        kind = c.get("kind") if isinstance(c, dict) else None
+        try:
+            if not isinstance(c, dict):
+                raise TypeError("not an object")
+            r = _user_check(c, v, ids)
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            name = c.get("name", "?") if isinstance(c, dict) else "?"
+            r = _check("user", kind or "?", name, "unknown", f"bad check: {e}"[:120])
         r["source"] = "user"
         r.setdefault("loud", r["status"] not in ("ok", "unknown"))
         res.append(r)

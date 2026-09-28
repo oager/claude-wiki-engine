@@ -1,6 +1,7 @@
 # ~/.claude/tools/session/tests/test_global.py
 import json
 import os
+import shutil
 import subprocess
 
 import open as op
@@ -43,8 +44,13 @@ def test_vault_state_stuck_merge_skips_pull(vault, fake):
     assert op.vault_state() == {"pull": "skipped", "stuck_merge": True}
 
 
-def test_vault_state_pull_failure_is_reported(vault):
-    res = op.vault_state()  # temp vault has no remote, so the pull fails
+def test_vault_state_pull_failure_is_reported(vault, tmp_path):
+    bare = tmp_path / "gone.git"  # an upstream that disappears: the pull fails
+    sh("git", "init", "-q", "--bare", "-b", "main", str(bare))
+    sh("git", "remote", "add", "origin", str(bare), cwd=vault)
+    sh("git", "push", "-q", "-u", "origin", "main", cwd=vault)
+    shutil.rmtree(bare)
+    res = op.vault_state()
     assert res["stuck_merge"] is False and res["pull"].startswith("failed")
 
 

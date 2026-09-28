@@ -3,6 +3,7 @@
     python -m unittest discover tests
 """
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -189,6 +190,37 @@ class SessionExtrasTest(unittest.TestCase):
         d.mkdir()
         (d / "SKILL.md").write_text("# my skill\nsee source: claude-wiki-engine\n", encoding="utf-8")
         self.assertFalse(self.inst.is_engine_skill(d))
+
+    def test_legacy_untagged_engine_copies_are_recognized(self):
+        # The 701848e installer copied preflight/sync without the source tag; their exact bytes identify them.
+        for name in ("preflight", "sync"):
+            data = (REPO / "tests" / "fixtures" / f"legacy-701848e-{name}-SKILL.md").read_bytes()
+            self.assertIn(hashlib.sha256(data).hexdigest(), self.inst.LEGACY_ENGINE_SKILL_SHA256)
+            d = self.tmp / name
+            d.mkdir()
+            (d / "SKILL.md").write_bytes(data)
+            self.assertTrue(self.inst.is_engine_skill(d))
+            (d / "SKILL.md").write_bytes(data + b"\nlocal edit\n")
+            self.assertFalse(self.inst.is_engine_skill(d))
+
+    def test_update_replaces_legacy_untagged_copy(self):
+        d = self.tmp / "skills/sync"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_bytes((REPO / "tests/fixtures/legacy-701848e-sync-SKILL.md").read_bytes())
+        self.inst.do_update(self.cfg(extra_skills=[]))
+        self.assertIn(self.inst.ENGINE_TAG, (d / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertTrue((self.tmp / "tools/session/open.py").is_file())
+
+    def test_non_default_config_base_warns_about_claude_vault(self):
+        plan = self.inst.build_plan(self.cfg(dry_run=True))
+        self.assertTrue(any("set CLAUDE_VAULT to" in n and str(self.tmp) in n for n in plan.notes))
+        plan = self.inst.build_plan(self.cfg(dry_run=True, extra_skills=["karpathy-guidelines"]))
+        self.assertFalse(any("CLAUDE_VAULT" in n for n in plan.notes))
+
+    def test_default_config_base_does_not_warn(self):
+        self.inst.home_claude = lambda: self.tmp  # this test's config_base plays ~/.claude
+        plan = self.inst.build_plan(self.cfg(dry_run=True))
+        self.assertFalse(any("CLAUDE_VAULT" in n for n in plan.notes))
 
     def test_crlf_claude_md_survives_repeated_injects(self):
         cmd = self.tmp / "CLAUDE.md"

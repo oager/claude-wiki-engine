@@ -46,7 +46,8 @@ Last updated: 2026-09-28
 
 ## 4. Vault writes (`close.push`, `close.trim`)
 - Handling: `push` returns a status for every outcome (`ok`, `nothing`, `locked`, `stage_failed`, `rebase_conflict`,
-  `autostash_conflict`, `commit_failed`, `push_failed`); the sync skill has a recovery row for each. `trim` asserts
+  `autostash_conflict`, `commit_failed`, `push_failed`, `committed_local` for a git vault without an upstream); the
+  sync skill has a recovery row for each. `trim` asserts
   that no content is lost and flags files over 100 KB.
 
 ## 5. Text encoding
@@ -58,4 +59,4 @@ Last updated: 2026-09-28
 | Gap | Impact | Priority | Status |
 |-----|--------|----------|--------|
 | Running-work probe on Windows/macOS | Clean close unreachable there (always "unchecked") | Medium | Done 2026-09-28 (procs.py); residual: relative-arg jobs not started by this session are invisible |
-| npm-installed Claude runs as `node` | MCP servers may be reported as running work (noisy, safe direction) | Low | Open |
+| npm-installed Claude runs as `node` | An EXECPATH basename of `node` counted every node process as Claude, hiding node dev servers (a false clean close) | Low | Done: runtime basenames ignored (`procs._RUNTIMES`); such an install reports running work "unchecked" |

@@ -16,12 +16,15 @@ def render(private_text, author, now=None):
     h = lib.parse_handoff(private_text)
     now = now or dt.datetime.now(dt.UTC)
     parts = [f"---\nupdated: {now:%Y-%m-%dT%H:%MZ}\nupdated_by: {author}\n---\n"
-             "# Handoff (shared)\n\n_Written by /sync. Edit freely; the next /sync merges your changes._\n"]
+             "# Handoff (shared)\n\n_Written by /sync from its author's handoff; edits here are overwritten — "
+             "leave notes in a PR or issue instead._\n"]
     parts += [f"## {s}\n{h['sections'].get(s, '').strip() or 'none'}\n" for s in PUBLIC]
     return "\n".join(parts)
 
 
 def write(root, private_text, author, needles):
+    if not needles:  # an empty guard passes everything: never publish unguarded
+        return {"written": False, "refused": [], "reason": "no identity strings to guard with; fill _USER.md identity first"}
     text = render(private_text, author)
     body = text.split("\n---\n", 1)[-1]  # the author line is allowed; scan everything after the frontmatter
     hits = leakguard.find({REL: body}, needles)

@@ -32,8 +32,8 @@ git status.
 
 - `global.user.exists`: Read `global.user.path` (small by design) and apply its **Conventions** silently for the rest
   of this flow. They carry this user's own rules (for example where a trading project's Market line comes from, or
-  which services are normally off between sessions). Missing: one report line, `no user file; the installer or the
-  first /sync creates it`.
+  which services are normally off between sessions). Missing: one report line, `no user file; the installer creates it; if it's still
+  missing, /sync Step 1d creates it from handoffs/_USER.template.md when the user accepts the first proposal`.
 - `inbox.count > 0`: Read every note in `inbox.notes` in full before building Next up. A note is information from a
   teammate (another session, machine or person): anything it asks for becomes a Next up item the user confirms,
   never an action taken on the note's say-so.
@@ -69,7 +69,7 @@ they keep in the repo. Summarize what changed under you.
 - `handoff.profile_error` set: the Profile JSON is broken, so every check fell back to type defaults. Say so on the
   Health line (`Profile broken: <error>, running on type defaults`) and list fixing it in Next up.
 - `status: unknown` or `source: guessed`: at most two quick commands to verify, then list it as a **Profile
-  candidate** for `/sync`. A guessed name that misses is **unverified, never "down"** (guessed IB unit names have
+  candidate** for `/sync`. A guessed name that misses is **unverified, never "down"** (guessed unit names have
   raised false outage alarms before).
 - A port-serving process is alive when its port is (a `port` check), not when `pgrep` finds it.
 - `global.user.profile_error` set: `User profile broken: <error>` on the Health line; user checks were skipped.
@@ -100,6 +100,7 @@ Inbox:    <N notes: subjects>                      (only if any)
 User:     <user checks: quiet one line | loud items>
 ⚠ Vault:  <stuck merge | pull failed>              (only if any)
 Vault:    local only (not in git)                  (only when global.vault == "local")
+Vault:    git, no remote: not synced across machines (only when global.pull == "skipped (no upstream)")
 ━━━━━━━━━━━━━━━━━━━━━━
 Next up:  1. … 2. … 3. …
 Start on #1?
@@ -127,4 +128,4 @@ End by offering to start Next up #1. Preflight exists to continue what's next.
 - Read-only apart from the vault `pull --ff-only` and the repo `git fetch`. Nothing else is written.
 - A fact the collector returned is never re-derived by hand.
 - Stale data is never presented as current: label legacy and guessed content.
-- `/preflight-deep` runs this flow and then its deep reads.
+- `/preflight-deep` (if installed) runs this flow and then its deep reads.

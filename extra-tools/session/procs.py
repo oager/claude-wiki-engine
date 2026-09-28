@@ -14,6 +14,11 @@ import lib
 
 SHELLS = {"bash", "sh", "zsh", "fish", "dash", "pwsh", "powershell", "cmd"}
 _CLAUDE_BIN = re.compile(r"^(claude|\d+\.\d+\.\d+)$")  # native installs run versions/<ver>
+# General runtimes: an npm install's EXECPATH may be `node`, and counting every node process as Claude would hide
+# a node dev server (a false clean close). Such an install is then unrecognized and reported "unchecked".
+_RUNTIMES = re.compile(r"^(node|nodejs|bun|deno|python|python\d(\.\d+)?|pythonw|pwsh|powershell)$")
+# Helpers the command-line probe skips: terminal hosts and short-lived tools under the session's shell.
+PROBE_SKIP = {"conhost", "git", "ssh", "less", "openconsole", "windowsterminal"}
 CIM = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine"
        " | ConvertTo-Json -Compress")
@@ -31,8 +36,10 @@ def _comm(name):
 
 def is_claude(comm):
     """Claude's process name: "claude", a version (native installs run versions/<ver>), or whatever binary this
-    session was launched as (Linux caps comm at 15 characters)."""
+    session was launched as (Linux caps comm at 15 characters), unless that is a general runtime such as node."""
     exe = _comm(os.environ.get("CLAUDE_CODE_EXECPATH", ""))
+    if _RUNTIMES.match(exe):
+        exe = ""
     return bool(_CLAUDE_BIN.match(comm)) or bool(exe) and comm in (exe, exe[:15])
 
 
@@ -155,7 +162,7 @@ def _root_patterns(root):
     forms = {k}
     if re.match(r"^[a-z]:/", k):
         forms.add("/" + k[0] + k[2:])  # Git Bash spells C:/x as /c/x
-    return [re.compile(re.escape(f) + r"(?=$|[/\"'\s])") for f in forms]
+    return [re.compile(re.escape(f) + r"(?=$|[/\"'\s;,)=:])") for f in forms]
 
 
 def _ancestor_pids(by, pid):
@@ -170,7 +177,8 @@ def _ancestor_pids(by, pid):
 def running_in(root, rows, my_pid):
     """Processes whose command line names root, or that descend from this session's own Claude process (a `cd`'d
     shell's relative-arg jobs, invisible on the command line), minus this session's own chain, Claude itself,
-    shells and harness helpers (MCP servers and other non-shell children Claude spawned directly)."""
+    shells, PROBE_SKIP helpers and harness helpers (MCP servers and other non-shell children Claude spawned
+    directly)."""
     by = {r["pid"]: r for r in rows}
     mine = list(_ancestor_pids(by, my_pid))
     claude_pid = next((pid for pid in mine if is_claude(by[pid]["comm"])), None)
@@ -179,7 +187,8 @@ def running_in(root, rows, my_pid):
     found = []
     for r in rows:
         pid = r["pid"]
-        if pid in mine or is_claude(r["comm"]) or r["comm"] in SHELLS or _harness_child(by, pid):
+        if (pid in mine or is_claude(r["comm"]) or r["comm"] in SHELLS or r["comm"] in PROBE_SKIP
+                or _harness_child(by, pid)):
             continue
         cmd = r["cmdline"].replace("\\", "/").lower()
         by_cmdline = any(p.search(cmd) for p in pats)

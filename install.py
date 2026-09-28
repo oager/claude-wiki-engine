@@ -23,6 +23,7 @@ idempotently (backup, all other keys preserved). The installer NEVER commits the
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
@@ -80,6 +81,12 @@ SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"
 SESSION_EXTRAS = {"preflight", "sync"}  # extras that need tools/session + the handoff templates
 ENGINE_TAG = "source: claude-wiki-engine"
+# preflight/sync SKILL.md as the 701848e installer copied them, before skills carried ENGINE_TAG: an install whose
+# bytes match one of these is an untouched engine copy, so --update may refresh it.
+LEGACY_ENGINE_SKILL_SHA256 = {
+    "427cd9b28e171f40db5a08d082d521819bf7ee67b8c92d94a360a6599bd23629",  # extra-skills/preflight/SKILL.md
+    "19cc77f9364d9b4b0ad8d91619277cdf467425fe0e687dfcd96d67710e65f91f",  # extra-skills/sync/SKILL.md
+}
 SESSION_START = "<!-- session-handoff:start -->"
 SESSION_END = "<!-- session-handoff:end -->"
 
@@ -248,21 +255,33 @@ def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: 
 
 
 def is_engine_skill(skill_dir: Path) -> bool:
-    """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter.
-    Requires real YAML frontmatter (text starting with `---`) so a body mention of the tag --
-    e.g. documentation referring to it -- is never mistaken for the engine's own marker."""
+    """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter, or is a
+    byte-identical legacy copy (LEGACY_ENGINE_SKILL_SHA256). Requires real YAML frontmatter (text starting
+    with `---`) so a body mention of the tag -- e.g. documentation referring to it -- is never mistaken for
+    the engine's own marker."""
     try:
-        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        data = (skill_dir / "SKILL.md").read_bytes()
     except OSError:
         return False
+    if hashlib.sha256(data).hexdigest() in LEGACY_ENGINE_SKILL_SHA256:
+        return True
+    text = data.decode("utf-8", "replace")
     if not text.startswith("---"):
         return False
     head = text.split("\n---", 1)[0]
     return ENGINE_TAG in head
 
 
+def home_claude() -> Path:
+    """Where the session skills look for their tools: they call ~/.claude/tools/session by that path."""
+    return Path.home() / ".claude"
+
+
 def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     """What /preflight and /sync need besides SKILL.md: tools/session, handoff templates, _USER.md, a CLAUDE.md block."""
+    if base.resolve() != home_claude().resolve():
+        plan.note(f"the session skills call ~/.claude/tools/session - set CLAUDE_VAULT to {base} "
+                  "for them to use this install")
     src_tools, dst_tools = ENGINE / "extra-tools" / "session", base / "tools" / "session"
     if dst_tools.exists() and not (dst_tools / ".engine").exists():
         plan.note("skip tools/session (present and not from the engine - not overwriting)")

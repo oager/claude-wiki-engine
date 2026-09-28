@@ -15,8 +15,9 @@ Update all persistent memory and status files for the current project, then push
 python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
 ```
 
-One JSON object: `identity`, `handoff {path, exists, size_kb}`, `legacy`, `git {dirty, dirty_count, unpushed,
-no_pr_branches, ci_pending}`, `running {procs}`, `drift`, `inbox_untriaged`, `repo_handoff`, `repo_sha`, `vault_sha`.
+One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `legacy`, `git {dirty,
+dirty_count, unpushed, no_pr_branches, ci_pending}`, `running {supported, procs, via, reason}`, `drift`,
+`inbox_untriaged`, `inbox_notes`, `repo_handoff`, `repo_sha`, `vault_sha`.
 `identity.how == "ambiguous"` →
 ask which project, re-run with `--project <key>`. Keep this `vault_sha`: it is recorded **before** this session's
 push, which is exactly what the next `/preflight` diffs from.
@@ -26,8 +27,9 @@ push, which is exactly what the next `/preflight` diffs from.
 A clean close = the next session can start from the handoff alone, with nothing hidden in git, in running processes
 or in the inbox.
 
-**Concurrent /sync:** before writing, compare the handoff's `updated` with the value this session read at
-`/preflight` (or at its first read). If it changed, another session synced in between: **merge** — keep their new
+**Concurrent /sync:** before writing, compare Step 0's `handoff_updated` (the handoff's frontmatter `updated` as
+close.py read it) with `handoff.updated` from this session's `/preflight` (or its first read of the handoff). If they
+differ, another session synced in between: **merge** — keep their new
 Next up, Open items and Standing notes, add this session's, re-rank — never rewrite over them, and say
 `merged with a concurrent /sync (<updated_by>)` in the report.
 
@@ -39,8 +41,8 @@ Standing notes. Leave the legacy file where it is.
 | Section | Rule |
 |---|---|
 | Next up | **Rewrite.** Max 5, ranked; item 1 = where the next session starts. From this session's work, the previous Next up and Open items. |
-| Warnings | **Rewrite** from Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no `/proc`, e.g. Windows, or `running.reason` set) → write `running work unchecked` (plus the reason), never `none`; likewise `git.error` → `PR state unchecked`. `running.via == "cmdline"` and `running.procs` is empty → write `running work: none found (command-line match)` instead of `none` (Windows/macOS match command lines, weaker evidence than the Linux `/proc` probe; it still counts as no running work for a clean close). `inbox_untriaged` > 0 → `N inbox notes untriaged`; `repo_handoff.uncommitted` → `repo handoff not committed`. Nothing → `none` (= clean close). |
-| Current state | **Rewrite:** live / deployed state and repo state. |
+| Warnings | **Rewrite LAST**, after Steps 1a–1d (trim, inbox triage, repo handoff, proposals), because their results feed it. From Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no process probe on this platform, or the probe failed; `running.reason` says which) → write `running work unchecked (<reason>)`, never `none`; likewise `git.error` → `PR state unchecked`. Untriaged notes = `inbox_notes` minus the notes Step 1b moved; any left → `N inbox notes untriaged`. From Step 1c's result: `ignored: true` → `repo handoff is gitignored (.claude/ ignored) — collaborators can't see it`; `uncommitted: true` → `repo handoff not committed`. Nothing → `none` (= clean close). |
+| Current state | **Rewrite:** live / deployed state and repo state. `running.via == "cmdline"` (Windows and macOS match the project path in command lines, weaker evidence than the Linux `/proc` probe) with empty `running.procs` → add `running work: none found (command-line match)` here, not under Warnings: it does not block a clean close. |
 | Open items | Add new, remove done. |
 | Profile | Add checks this session verified (preflight's `guessed` / `unknown` candidates that proved right, real unit names, health URLs, queue files, `deploys_from_repo`). List every Profile change in the Step 5 report. |
 | Standing notes | Add new gotchas. Never drop one on a rewrite. |
@@ -77,9 +79,12 @@ Notes left untouched stay and appear under Warnings.
 ```bash
 python3 ~/.claude/tools/session/close.py repo-handoff --cwd "$PWD"
 ```
-`written: true` → the file is committed with the project's normal flow (`/sync and ship`, or the next PR); until then
-Warnings says `repo handoff not committed`. `refused` → the leak guard found personal strings; fix the private
-handoff's public sections (Next up, Current state, Warnings, Open items) and re-run. Never commit a refused file by hand.
+`written: true` → the file is committed with the project's normal flow (Step 4 "and ship", or the next PR). The
+result carries `uncommitted` and `ignored`, which Warnings reports (see Step 1). Each /sync overwrites the file from
+this handoff, so collaborators leave notes in a PR or issue, not in the file. `refused` non-empty → the leak guard
+found personal strings; fix the private handoff's public sections (Next up, Current state, Warnings, Open items) and
+re-run. `refused` empty with a `reason` → `_USER.md` has no identity strings to guard with; nothing is written until
+it does (propose filling it in Step 1d). Never commit a refused file by hand.
 
 ### Step 1d — User handoff proposals (`handoffs/_USER.md`)
 
@@ -97,7 +102,8 @@ User:     2 proposals for _USER.md (reply e.g. "1 yes, 2 no")
   1. + Conventions: "<line>"      evidence: <where it came from>
   2. - Standing notes: "<line>"   contradicted: <by what>
 ```
-`yes` → write it and add `_USER.md` to the Step 3 push. `no` → add `- **YYYY-MM-DD** — <proposal> (<reason>)` under
+`yes` → write it and add `_USER.md` to the Step 3 push. `_USER.md` missing: the installer creates it; if it's still
+missing, create it from `handoffs/_USER.template.md` when the user accepts the first proposal. `no` → add `- **YYYY-MM-DD** — <proposal> (<reason>)` under
 `Declined`. Anything unclear → write nothing and propose again next time. Removals use the same gate; a Standing note
 is never dropped silently. If `/preflight` reported `global.user.over_max`, say so and suggest `/doc-review`; never
 trim `_USER.md` yourself.
@@ -181,6 +187,7 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 | `stage_failed` | No listed file exists or is tracked (the list was wrong): fix the list and re-run. Nothing was staged. |
 | `dropped` non-empty (on any status) | These listed paths don't exist and were never committed, so they were skipped. Harmless only for an archive file `trim` never created; anything else means the file list is wrong — fix it and re-run push. |
 | `local` | The vault is not a git repo: the files are written locally and there is nothing to push. Report "vault: local". |
+| `committed_local` | Git vault without a remote: committed locally, nothing pushed. Report `sha` and "add a remote to sync machines". If `missing` is non-empty, re-run push with those files. |
 | `rebase_conflict` | The remote changed the same file. close.py already ran `git rebase --abort`: the vault is back on the branch with your commit intact and nothing pushed. Pull the other side's change, merge the file by hand (union-merge append-only files), commit, and re-run push; a re-run pushes the existing commit. |
 | `autostash_conflict` | Your commit was pushed, but popping OTHER sessions' uncommitted work conflicted. Follow the recovery below using the `stash` sha from the output. |
 | `commit_failed` / `push_failed` | Report `detail`. `Permission denied` = an antivirus handle: defer the push (the local commit is safe); a reboot clears it. Re-running push later pushes the waiting commit. |
@@ -206,7 +213,10 @@ file unstaged and let the owning session's commit carry both.
 
 ## Step 4 — "and ship" (only when explicitly requested)
 
-When called as `/sync and ship`: after completing Steps 1–3, commit and push the current project repo. Try invoking the `/ship` skill via the Skill tool first. If that's refused (ship is `disable-model-invocation: true`), Read `~/.claude/skills/ship/SKILL.md` and follow it inline: branch → commit → push → open a PR and stop (merge only if the user said `and ship merge`; never on a live-money repo without confirmation). Direct push only for the repos ship's Step 0 lists. Report the PR URL.
+When called as `/sync and ship`: after completing Steps 1–3, commit and push the current project repo. If a `ship`
+skill is installed, invoke it; otherwise commit and push the project repo yourself on a branch and open a PR, then
+stop (merge only if the user asked for it; never merge a repo that runs production or real money without
+confirmation). Report the PR URL.
 
 ## Step 5 — Report
 
@@ -221,19 +231,19 @@ Vault:    pushed <sha> | nothing to commit | deferred (<reason>)
 
 Hardest-won traps (distilled — see Step 3 + the concept pages for full rationale):
 
-- **Never `git add -A` on the vault** — it's a shared multi-session working tree; `-A` stages other sessions' half-writes and phantom deletions and silently commits their work away. Stage an explicit allowlist of only the files THIS session touched (Step 3, `close.py push`). `memory/concepts/multi_session_vault_git.md`.
+- **Never `git add -A` on the vault** — it's a shared multi-session working tree; `-A` stages other sessions' half-writes and phantom deletions and silently commits their work away. Stage an explicit allowlist of only the files THIS session touched (Step 3, `close.py push`).
 - **Never `git reset --hard` / `git push --force` on the vault** — destroys concurrent sessions' work. Recover a phantom-deleted file with targeted `git checkout HEAD -- <file>`, never a reset.
 - **Lock before any vault git op** — `mkdir`-based atomic mutex (Step 3, `close.py push`), released on exit, 5-min stale breaker. One committer at a time.
-- **`git add` can silently stage nothing** (Windows `core.ignorecase=true` case drift) — always confirm with `git diff --cached --stat`; if empty for a file you changed, re-add with `':(icase)<path>'` or the exact path from `git status --porcelain`. The Capital-slug dir was renamed lowercase 2026-06-12 (`c33519b`), but the guard stays for future drift. `memory/concepts/preflight_cwd_slug_gap.md`.
-- **NEW `projects/*/memory/` files need `git add -f`** — `.gitignore` re-includes that dir via a negation, and git can't re-include a brand-NEW file under an ignored parent with a plain `git add <path>` (silently skipped, nothing staged). Already-tracked files are fine; only new files drop. Force-add them and verify with `git cat-file -e HEAD:<path>` after push. (2026-07-01: a fresh `gamma_code_review` memory silently never committed until force-added.)
+- **`git add` can silently stage nothing** (Windows `core.ignorecase=true` case drift) — always confirm with `git diff --cached --stat`; if empty for a file you changed, re-add with `':(icase)<path>'` or the exact path from `git status --porcelain`. Case drift can come back whenever a folder is renamed, so keep the check.
+- **NEW `projects/*/memory/` files need `git add -f`** — `.gitignore` re-includes that dir via a negation, and git can't re-include a brand-NEW file under an ignored parent with a plain `git add <path>` (silently skipped, nothing staged). Already-tracked files are fine; only new files drop. Force-add them and verify with `git cat-file -e HEAD:<path>` after push.
 - **`Permission denied` on rebase = antivirus, not git** — AV real-time protection quarantines a file with security-incident/IOC content and holds a delete-pending handle. Do NOT force or reset; the local commit is safe (it's HEAD). Reboot clears it; add an AV exclusion for `~/.claude` to prevent recurrence. Windows Search is a red herring. Defer the push and report.
-- **After any messy rebase, verify your edits survived** — a two-session same-file rebase can auto-merge your changes away with NO conflict shown. `grep HEAD:<file>` for your key markers before assuming the commit kept them (lost the deep-dive `--quick` edits this way, 2026-06-09→11).
+- **After any messy rebase, verify your edits survived** — a two-session same-file rebase can auto-merge your changes away with NO conflict shown. `grep HEAD:<file>` for your key markers before assuming the commit kept them.
 - **Auto-memory is path/case-fragile** — durable cross-machine knowledge belongs in the global wiki (`memory/`) via `/wiki-ingest`, not the cwd-keyed project store. Launch Claude from the canonical path to keep the slug stable.
-- **Handoffs are trimmed every sync (Step 1a)** — `close.py trim` archives Last session entries older than 14 days, so the file `/preflight` reads stays small. It never cuts undated sections (Standing notes are live procedure, not history). A pre-redesign SESSION_RESUME once reached 298 KB with a single 40,385-character line (2026-08-01).
+- **Handoffs are trimmed every sync (Step 1a)** — `close.py trim` archives Last session entries older than 14 days, so the file `/preflight` reads stays small. It never cuts undated sections (Standing notes are live procedure, not history). Without trimming, a handoff grows to hundreds of KB.
 
 ## Rules
 - **NEVER `git add -A` on the vault** — shared multi-session working tree; `-A` commits other sessions'
-  half-writes and phantom deletions. Stage only your own files (Step 3, `close.py push`). See `memory/concepts/multi_session_vault_git.md`.
+  half-writes and phantom deletions. Stage only your own files (Step 3, `close.py push`).
 - **Never `git reset --hard` / `git push --force` on the vault** — destroys concurrent sessions' work.
   Recover phantom deletions with targeted `git checkout HEAD -- <file>`, never `reset --hard`.
 - **Lock before git** (Step 3, `close.py push`) — serialize commits across sessions. Release on exit.
@@ -242,7 +252,7 @@ Hardest-won traps (distilled — see Step 3 + the concept pages for full rationa
   was the real cause — not Windows Search).
 - Don't create duplicate memory entries — check the index first
 - Convert relative dates to absolute dates when saving
-- MEMORY.md index entries are a link + a one-line summary — no character cap (removed 2026-07-25);
+- MEMORY.md index entries are a link + a one-line summary — no character cap;
   the test is whether the line helps you decide to open the page, not its length
 - Only add genuinely new information — restating known facts wastes context next session
 - If nothing meaningful changed, say so and skip

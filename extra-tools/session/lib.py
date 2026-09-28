@@ -130,11 +130,17 @@ def _no_ids():
     return {"names": [], "emails": [], "hosts": {}}
 
 
+def _strs(v):
+    return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+
 def load_self_ids():
     """Who "self" is: the _USER.md Profile identity, else the legacy self_ids.json, else nobody."""
     ident = user_file()["profile"].get("identity")
-    if isinstance(ident, dict):
-        return {**_no_ids(), **ident}
+    if isinstance(ident, dict):  # a hand-edited Profile may hold any json: wrong types fall back to the defaults
+        hosts = ident.get("hosts")
+        return {**ident, "names": _strs(ident.get("names")), "emails": _strs(ident.get("emails")),
+                "hosts": hosts if isinstance(hosts, dict) else {}}
     try:
         return {**_no_ids(), **json.loads((HERE / "self_ids.json").read_text(encoding="utf-8"))}
     except (OSError, ValueError):
