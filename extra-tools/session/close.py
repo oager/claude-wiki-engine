@@ -291,8 +291,9 @@ def push(files, message, retries=15):
             rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
             if rc != 0:
                 return done("commit_failed", detail=(err or out)[-300:])
-        if g("rev-parse", "--abbrev-ref", "@{u}")[0] != 0:  # a git vault without a remote: nothing to pull or push
-            return done("committed_local", sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing())
+        if g("rev-parse", "--abbrev-ref", "@{u}")[0] != 0:  # no upstream: nothing to pull or push
+            return done("committed_local", sha=g("rev-parse", "--short", "HEAD")[1].strip(), missing=missing(),
+                        reason=lib.no_upstream_reason(v))
         if not new and g("rev-list", "--count", "@{u}..HEAD")[1].strip() in ("", "0"):
             return done("nothing")  # nothing new AND nothing left unpushed by an earlier failed run
         stash = None
@@ -363,7 +364,11 @@ def main(argv=None):
         elif a.cmd == "push":
             res = push(a.files, a.message)
         elif a.cmd == "note":
-            body = Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.buffer.read().decode("utf-8", "replace")
+            body = (
+                Path(a.file).read_text(encoding="utf-8")
+                if a.file
+                else sys.stdin.buffer.read().decode("utf-8-sig", "replace")
+            )
             p = inbox.write_note(a.to, a.from_, a.subject, body)
             res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
         elif a.cmd == "inbox-done":

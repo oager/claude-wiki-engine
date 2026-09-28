@@ -10,10 +10,12 @@ def _vault(tmp_path, planted=""):
     t = v / "tools/session"
     (t / "tests").mkdir(parents=True)
     (t / "__pycache__").mkdir()
+    (t / ".ruff_cache").mkdir()
     (t / "open.py").write_text(f"x = 1  {planted}\n", encoding="utf-8")
     (t / "tests/test_x.py").write_text("def test(): pass\n", encoding="utf-8")
     (t / "self_ids.json").write_text("{}", encoding="utf-8")
     (t / "__pycache__/open.cpython-312.pyc").write_bytes(b"\0")
+    (t / ".ruff_cache/x.bin").write_bytes(b"\0\1\2")
     (t / "claude-md-block.md").write_text("## Session handoff\n", encoding="utf-8")
     (v / "handoffs").mkdir()
     (v / "handoffs/_TEMPLATE.md").write_text("# Handoff\n", encoding="utf-8")
@@ -38,6 +40,7 @@ def test_publish_copies_tags_and_excludes(tmp_path):
     assert (e / "extra-tools/session/open.py").is_file() and (e / "extra-tools/session/tests/test_x.py").is_file()
     assert not (e / "extra-tools/session/self_ids.json").exists()
     assert not (e / "extra-tools/session/__pycache__").exists()
+    assert not (e / "extra-tools/session/.ruff_cache").exists()
     assert (e / "extra-tools/session/.engine").read_text(encoding="utf-8").strip() == "9.9.9"
     assert (e / "claude-md/session-handoff.md").is_file()
     assert (e / "templates/handoffs/_USER.template.md").is_file()

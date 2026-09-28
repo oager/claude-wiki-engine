@@ -187,7 +187,7 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 | `stage_failed` | No listed file exists or is tracked (the list was wrong): fix the list and re-run. Nothing was staged. |
 | `dropped` non-empty (on any status) | These listed paths don't exist and were never committed, so they were skipped. Harmless only for an archive file `trim` never created; anything else means the file list is wrong — fix it and re-run push. |
 | `local` | The vault is not a git repo: the files are written locally and there is nothing to push. Report "vault: local". |
-| `committed_local` | Git vault without a remote: committed locally, nothing pushed. Report `sha` and "add a remote to sync machines". If `missing` is non-empty, re-run push with those files. |
+| `committed_local` | No upstream to push to: committed locally, nothing pushed. Report `sha` — see `reason` for why (no remote / no upstream tracking / detached HEAD) and what to do. If `missing` is non-empty, re-run push with those files. |
 | `rebase_conflict` | The remote changed the same file. close.py already ran `git rebase --abort`: the vault is back on the branch with your commit intact and nothing pushed. Pull the other side's change, merge the file by hand (union-merge append-only files), commit, and re-run push; a re-run pushes the existing commit. |
 | `autostash_conflict` | Your commit was pushed, but popping OTHER sessions' uncommitted work conflicted. Follow the recovery below using the `stash` sha from the output. |
 | `commit_failed` / `push_failed` | Report `detail`. `Permission denied` = an antivirus handle: defer the push (the local commit is safe); a reboot clears it. Re-running push later pushes the waiting commit. |

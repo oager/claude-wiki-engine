@@ -26,7 +26,9 @@ MAPPING = {
     "handoffs/_USER.template.md": "templates/handoffs/_USER.template.md",
     "tools/session/claude-md-block.md": "claude-md/session-handoff.md",
 }
-EXCLUDE = shutil.ignore_patterns("self_ids.json", "_USER.md", "__pycache__", "*.pyc", ".pytest_cache")
+EXCLUDE = shutil.ignore_patterns(
+    "self_ids.json", "_USER.md", "__pycache__", "*.pyc", ".pytest_cache", ".ruff_cache", ".mypy_cache"
+)
 TAG = "source: claude-wiki-engine"
 
 

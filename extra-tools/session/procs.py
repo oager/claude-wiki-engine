@@ -1,7 +1,8 @@
 """Process facts for the session collectors: which processes are Claude, and what else runs in a project.
 
 Linux reads /proc, which exposes each process's working directory. Windows and macOS have no cheap cwd, so their
-probe lists command lines and matches the project path inside them (spec 2026-09-28 §6.6). Stdlib only.
+probe lists command lines and matches the project path inside them.
+Design: claude-wiki-engine README, "Session handoff". Stdlib only.
 """
 import datetime as dt
 import json

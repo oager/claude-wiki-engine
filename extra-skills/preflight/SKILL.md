@@ -100,7 +100,7 @@ Inbox:    <N notes: subjects>                      (only if any)
 User:     <user checks: quiet one line | loud items>
 ⚠ Vault:  <stuck merge | pull failed>              (only if any)
 Vault:    local only (not in git)                  (only when global.vault == "local")
-Vault:    git, no remote: not synced across machines (only when global.pull == "skipped (no upstream)")
+Vault:    git, no remote: not synced across machines (only when global.pull starts with "skipped (" — say why from the rest of the string: no remote, no upstream tracking, or detached HEAD)
 ━━━━━━━━━━━━━━━━━━━━━━
 Next up:  1. … 2. … 3. …
 Start on #1?

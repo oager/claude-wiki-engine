@@ -2,7 +2,7 @@
 """/preflight collector: gather every mechanical fact in one call and print one JSON object.
 
 Always exits 0 -- a failing check records its error in its own entry instead of
-aborting the briefing. Spec: ~/.claude/docs/specs/2026-09-27-preflight-sync-redesign.md
+aborting the briefing. Design: claude-wiki-engine README, "Session handoff".
 """
 import argparse
 import datetime as dt
@@ -35,8 +35,8 @@ def vault_state():
              or any(line[:2] in UNMERGED for line in out.splitlines()))
     if stuck:
         return {"pull": "skipped", "stuck_merge": True}
-    if lib.git(v, "rev-parse", "--abbrev-ref", "@{u}") is None:  # a git vault without a remote: nothing to pull
-        return {"pull": "skipped (no upstream)", "stuck_merge": stuck}
+    if lib.git(v, "rev-parse", "--abbrev-ref", "@{u}") is None:  # no upstream: nothing to pull
+        return {"pull": f"skipped ({lib.no_upstream_reason(v)})", "stuck_merge": stuck}
     rc, out, err = lib.RUN(["git", "-C", v, "pull", "--ff-only", "-q"], timeout=20)
     if rc == 0:
         return {"pull": "ok", "stuck_merge": False}

@@ -1,5 +1,6 @@
-"""A shared project's public handoff, <repo>/.claude/HANDOFF.md (spec 2026-09-28 §7a).
+"""A shared project's public handoff, <repo>/.claude/HANDOFF.md.
 
+Design: claude-wiki-engine README, "Session handoff" ("Shared projects").
 Only public sections are copied from the vault handoff; the leak guard refuses identity strings.
 """
 import datetime as dt

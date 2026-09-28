@@ -11,7 +11,7 @@ import open as op
 import procs
 import pytest
 import repohandoff as rh
-from conftest import SAMPLE_HANDOFF, commit
+from conftest import SAMPLE_HANDOFF, commit, sh
 from test_procs import ME, ROOT, rows_for
 from test_push import pushable  # noqa: F401  (fixture)
 
@@ -90,6 +90,18 @@ def test_note_stdin_is_read_as_utf8(vault, pushable, monkeypatch, capsys):  # no
     assert res["status"] == "ok"
     [n] = inbox.list_notes("k")
     assert text in open(n["path"], encoding="utf-8").read()
+
+
+def test_note_stdin_strips_a_leading_bom(vault, pushable, monkeypatch, capsys):  # noqa: F811
+    text = "hello body"
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xef\xbb\xbf" + text.encode("utf-8")),
+                                                         encoding="latin-1"))
+    cl.main(["note", "--to", "k", "--from", "tester", "--subject", "bom"])
+    res = _out(capsys)
+    assert res["status"] == "ok"
+    [n] = inbox.list_notes("k")
+    written = open(n["path"], encoding="utf-8").read()
+    assert "﻿" not in written and text in written
 
 
 # A2: malformed user checks never break the briefing.
@@ -190,14 +202,47 @@ def test_push_without_upstream_commits_locally(vault):
     h.write_text("hand", encoding="utf-8")
     r = cl.push([str(h)], "sync: k")
     assert r["status"] == "committed_local" and r["missing"] == [] and r["sha"]
+    assert r["reason"] == "no remote"
     log = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"], capture_output=True, text=True,
                          encoding="utf-8").stdout.strip()
     assert log == "sync: k"
     assert cl.push([str(h)], "sync: k again")["status"] == "committed_local"
 
 
+def test_push_with_remote_but_no_tracking_reports_reason(vault):
+    sh("git", "remote", "add", "origin", "git@github.com:alice/vault.git", cwd=vault)
+    (vault / "handoffs").mkdir()
+    h = vault / "handoffs/k.md"
+    h.write_text("hand", encoding="utf-8")
+    r = cl.push([str(h)], "sync: k")
+    assert r["status"] == "committed_local"
+    assert r["reason"] == "no upstream (run: git push -u origin main)"
+
+
+def test_push_on_detached_head_reports_reason(vault):
+    sh("git", "checkout", "-q", "--detach", cwd=vault)
+    (vault / "handoffs").mkdir()
+    h = vault / "handoffs/k.md"
+    h.write_text("hand", encoding="utf-8")
+    r = cl.push([str(h)], "sync: k")
+    assert r["status"] == "committed_local"
+    assert r["reason"] == "detached HEAD"
+
+
 def test_vault_state_without_upstream_skips_pull(vault, fake):
-    assert op.vault_state() == {"pull": "skipped (no upstream)", "stuck_merge": False}
+    assert op.vault_state() == {"pull": "skipped (no remote)", "stuck_merge": False}
+    assert not any("pull" in c for c in fake.calls)
+
+
+def test_vault_state_with_remote_but_no_tracking_skips_pull(vault, fake):
+    sh("git", "remote", "add", "origin", "git@github.com:alice/vault.git", cwd=vault)
+    assert op.vault_state() == {"pull": "skipped (no upstream (run: git push -u origin main))", "stuck_merge": False}
+    assert not any("pull" in c for c in fake.calls)
+
+
+def test_vault_state_on_detached_head_skips_pull(vault, fake):
+    sh("git", "checkout", "-q", "--detach", cwd=vault)
+    assert op.vault_state() == {"pull": "skipped (detached HEAD)", "stuck_merge": False}
     assert not any("pull" in c for c in fake.calls)
 
 

@@ -1,7 +1,7 @@
 # ~/.claude/tools/session/lib.py
 """Shared helpers for the /preflight (open.py) and /sync (close.py) collectors.
 
-Spec: ~/.claude/docs/specs/2026-09-27-preflight-sync-redesign.md
+Design: claude-wiki-engine README, "Session handoff".
 Stdlib only: this must run under Windows Git Bash python as well as Linux.
 """
 import datetime as dt
@@ -86,6 +86,18 @@ def rebase_in_progress(root):
 def default_branch(root):
     ref = git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     return ref.split("/", 1)[1] if ref and "/" in ref else "main"
+
+
+def no_upstream_reason(root):
+    """Why `root` has no @{u} tracking ref: detached HEAD, no remote at all, or a branch never pushed."""
+    branch = git(root, "symbolic-ref", "-q", "--short", "HEAD")
+    if branch is None:
+        return "detached HEAD"
+    remotes = git(root, "remote")
+    if not remotes:
+        return "no remote"
+    remote = remotes.splitlines()[0]
+    return f"no upstream (run: git push -u {remote} {branch})"
 
 
 def vault_is_git():
