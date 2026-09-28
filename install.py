@@ -8,6 +8,8 @@ Installs the Karpathy-style LLM-wiki engine into a Claude Code config:
                  log.md, sources/entities/concepts/synthesis/raw/raw/archive)
   - hook        (wiki-index-check.cjs)                -> <config>/hooks/ + settings.json (safe merge)
   - CLAUDE.md   ingestion-policy block                -> <config>/CLAUDE.md  (sentinel-bounded)
+  - session     (tools/session, with preflight/sync)  -> <config>/tools/session/  (skip-if-foreign)
+  - CLAUDE.md   session-handoff block                 -> <config>/CLAUDE.md  (sentinel-bounded)
 
 Detection-driven: every target is symlink-resolved and operated on at its REAL path, so the same
 script adapts to any layout (personal ~/.claude, a shared claude-global, etc.) with no hardcoded
@@ -75,6 +77,10 @@ HOOKS = [
 ]
 SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"
+SESSION_EXTRAS = {"preflight", "sync"}  # extras that need tools/session + the handoff templates
+ENGINE_TAG = "source: claude-wiki-engine"
+SESSION_START = "<!-- session-handoff:start -->"
+SESSION_END = "<!-- session-handoff:end -->"
 
 
 # ------------------------- detection -------------------------
@@ -193,16 +199,14 @@ def read_text_keep_eol(path: Path) -> tuple[str, str]:
     return raw.decode("utf-8"), eol
 
 
-def inject_block(claude_md: Path, block: str):
-    """Insert/replace the sentinel-bounded policy block. Edits the real file (follows symlink)."""
+def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: str = SENTINEL_END):
+    """Insert/replace a sentinel-bounded block. Edits the real file (follows symlink)."""
     target = claude_md.resolve()
-    managed = f"{SENTINEL_START}\n{block.strip()}\n{SENTINEL_END}"
+    managed = f"{start}\n{block.strip()}\n{end}"
     if target.exists():
         text, eol = read_text_keep_eol(target)
-        if SENTINEL_START in text and SENTINEL_END in text:
-            pre = text.split(SENTINEL_START)[0]
-            post = text.split(SENTINEL_END, 1)[1]
-            new = pre + managed + post
+        if start in text and end in text:
+            new = text.split(start)[0] + managed + text.split(end, 1)[1]
         else:
             sep = "" if text.endswith("\n") else "\n"
             new = text + sep + "\n" + managed + "\n"
@@ -210,6 +214,44 @@ def inject_block(claude_md: Path, block: str):
         target.parent.mkdir(parents=True, exist_ok=True)
         new, eol = managed + "\n", "\n"
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
+
+
+def is_engine_skill(skill_dir: Path) -> bool:
+    """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter."""
+    try:
+        head = (skill_dir / "SKILL.md").read_text(encoding="utf-8").split("\n---", 1)[0]
+    except OSError:
+        return False
+    return ENGINE_TAG in head
+
+
+def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
+    """What /preflight and /sync need besides SKILL.md: tools/session, handoff templates, _USER.md, a CLAUDE.md block."""
+    src_tools, dst_tools = ENGINE / "extra-tools" / "session", base / "tools" / "session"
+    if dst_tools.exists() and not (dst_tools / ".engine").exists():
+        plan.note("skip tools/session (present and not from the engine - not overwriting)")
+    elif dst_tools.exists() and not update:
+        plan.note("keep tools/session (engine copy present; --update refreshes it)")
+    else:
+        plan.add("copy", f"extra-tools/session -> {dst_tools}",
+                 lambda s=src_tools, d=dst_tools: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+    hand = base / "handoffs"
+    for name in ("_TEMPLATE.md", "_USER.template.md"):
+        s, d = ENGINE / "templates" / "handoffs" / name, hand / name
+        plan.add("copy", f"templates/handoffs/{name} -> {hand}",
+                 lambda s=s, d=d: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+    user = hand / "_USER.md"
+    if user.exists():
+        plan.note("keep handoffs/_USER.md (yours)")
+    else:
+        tmpl = ENGINE / "templates" / "handoffs" / "_USER.template.md"
+        plan.add("seed", f"_USER.md -> {hand}",
+                 lambda s=tmpl, d=user: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+    if claude_md:
+        block = (ENGINE / "claude-md" / "session-handoff.md").read_text(encoding="utf-8")
+        cmd = base / "CLAUDE.md"
+        plan.add("edit", f"CLAUDE.md (+ session-handoff block) -> {cmd}",
+                 lambda c=cmd, b=block: inject_block(c, b, SESSION_START, SESSION_END))
 
 
 _SNAPSHOTTED: set[str] = set()  # files backed up THIS run -- snapshot once, before ANY wiring
@@ -436,7 +478,9 @@ def build_plan(cfg: dict) -> Plan:
             plan.note(f"skip extra '{name}' (not in this engine version)")
             continue
         if dst.exists() and not cfg.get("force_skills"):
-            plan.note(f"skip extra '{name}' (already present - not overwriting; --force-skills to replace)")
+            why = ("engine copy present; --update refreshes it" if is_engine_skill(dst)
+                   else "not overwriting; --force-skills to replace")
+            plan.note(f"skip extra '{name}' (already present - {why})")
             continue
         if mode == "symlink":
             plan.add("link", f"{name} (extra) -> {dst}",
@@ -444,6 +488,9 @@ def build_plan(cfg: dict) -> Plan:
         else:
             plan.add("copy", f"extra-skills/{name} -> {dst}",
                      lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+
+    if SESSION_EXTRAS & set(cfg.get("extra_skills") or []):
+        session_plan(plan, base, update=False, claude_md=cfg["claude_md"])
 
     # framework (seed-if-absent)
     mem_real = memory_dir.resolve() if memory_dir.is_symlink() else memory_dir
@@ -500,7 +547,8 @@ def build_plan(cfg: dict) -> Plan:
 
 def do_update(cfg: dict):
     print("Updating engine + re-copying ITS skills + refreshing the hook (content untouched)…")
-    subprocess.run(["git", "-C", str(ENGINE), "pull", "--ff-only"], check=False)
+    if not cfg.get("no_pull"):
+        subprocess.run(["git", "-C", str(ENGINE), "pull", "--ff-only"], check=False)
     plan = Plan(cfg["dry_run"])
     base, skills_dir = cfg["config_base"], cfg["config_base"] / "skills"
     skills_real = skills_dir.resolve() if skills_dir.is_symlink() else skills_dir
@@ -523,6 +571,17 @@ def do_update(cfg: dict):
     block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
     plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
              lambda c=cmd, b=block: inject_block(c, b))
+    for name in EXTRA_SKILLS:
+        src, dst = ENGINE / "extra-skills" / name, skills_real / name
+        if not (dst.exists() and src.exists()):
+            continue
+        if is_engine_skill(dst):
+            plan.add("copy", f"extra-skills/{name} -> {dst}", lambda s=src, d=dst: (_backup(d), copy_tree(s, d)))
+        else:
+            plan.note(f"skip extra '{name}' (not tagged as an engine copy; replace with: "
+                      f"install.py --force-skills --extras {name})")
+    if any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS):
+        session_plan(plan, base, update=True, claude_md=True)
     print(plan.render())
     plan.execute()
 

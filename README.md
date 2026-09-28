@@ -95,6 +95,27 @@ Same safety rules as the core skills: existing skills are skipped rather than ov
 (`--force-skills` replaces them, backing up first), and `--mode symlink` links them so they
 auto-update with the repo.
 
+## Session handoff (preflight + sync)
+
+`/preflight` opens a session; `/sync` closes it. Both are **user-only** slash commands (Claude cannot start them).
+
+- **Three layers.** The skills and `tools/session/` are the same for everyone. `handoffs/_USER.md` is yours: identity,
+  user-wide checks and conventions, grown by `/sync` only after you say yes to each proposal. `handoffs/<key>.md` is
+  one project's handoff: Next up, Warnings, Current state, Profile, Standing notes.
+- **Clean close:** the next session can start from the handoff alone — nothing hidden in git, in running processes or
+  in the inbox.
+- **Inbox:** `python3 ~/.claude/tools/session/close.py note --to <key> --from <you> --subject "..."` leaves a note the
+  next `/preflight` in that project shows, on any machine that shares the vault.
+- **Shared projects:** set `"shared": true` in the project Profile and `/sync` also writes a public
+  `.claude/HANDOFF.md` (leak-guarded) for collaborators.
+- **Plain setups work:** no git in `~/.claude`, one machine, no systemd — the extras switch on when present.
+- **Updating:** `python install.py --update` refreshes extras tagged `source: claude-wiki-engine` (backed up as
+  `.wikibak` first). Copies from before this version are untagged: replace them once with
+  `python install.py --force-skills --extras preflight,sync`.
+- **Converting an old `SESSION_RESUME.md`:** the first `/sync` does it. Archive every dated section, carry every rule
+  unless shown obsolete, list only verified service names, give ports an `owner`, write Current state from live data,
+  and keep Warnings honest.
+
 ## How it adapts (no hardcoding)
 The installer resolves symlinks and writes to the **real** target, so it fits any layout — a personal
 `~/.claude`, or a shared global that other configs symlink to — without per-user configuration.
