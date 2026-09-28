@@ -77,7 +77,8 @@ def test_other_pid_same_host_still_listed(vault, monkeypatch):
     assert [o["pid"] for o in sessions.others(KEY)] == [900]
 
 
-# F2: a directory path must not commit the per-machine registry.
+# F2 / P1 (2026-09-28, security): push refuses ANY directory outright — it must never commit the
+# per-machine registry, and (since the follow-up) never commit anything else it happens to contain either.
 def _registry(vault):
     d = _live(vault)
     d.mkdir(parents=True, exist_ok=True)
@@ -93,23 +94,24 @@ def test_push_registry_dir_is_never_staged(vault, pushable):  # noqa: F811
     assert _git(vault, "diff", "--cached", "--name-only") == ""
 
 
-def test_push_ancestor_dir_commits_handoff_not_registry(vault, pushable):  # noqa: F811
+def test_push_ancestor_dir_refused(vault, pushable):  # noqa: F811
     _registry(vault)
     (vault / "handoffs/k.md").write_text("hand", encoding="utf-8")
     res = cl.push([str(vault / "handoffs")], "m")
-    assert res["status"] == "ok"
-    assert _git(vault, "ls-files", "handoffs").split() == ["handoffs/k.md"]
+    assert res["status"] == "stage_failed"
+    assert _git(vault, "ls-files", "handoffs") == ""
     assert _git(vault, "diff", "--cached", "--name-only") == ""
 
 
-def test_push_ancestor_dir_with_moved_note(vault, pushable):  # noqa: F811
+def test_push_ancestor_dir_with_moved_note_refused(vault, pushable):  # noqa: F811
     note = inbox.write_note("k", "s", "one", "b")
     assert cl.push([str(note)], "note")["status"] == "ok"
     _registry(vault)
     inbox.mark_done([str(note)])
     res = cl.push([str(note), str(vault / "handoffs")], "triage")
-    assert res["status"] == "ok" and res["missing"] == []
-    assert _git(vault, "ls-files", "handoffs").split() == [f"handoffs/inbox/k/done/{note.name}"]
+    assert res["status"] == "stage_failed"
+    assert _git(vault, "diff", "--cached", "--name-only") == ""
+    assert f"handoffs/inbox/k/done/{note.name}" not in _git(vault, "ls-files", "handoffs").split()
 
 
 def test_push_excluded_only_leaves_other_staged_files_alone(vault, pushable):  # noqa: F811

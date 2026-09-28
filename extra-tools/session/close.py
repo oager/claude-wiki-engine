@@ -297,6 +297,16 @@ def push(files, message, retries=15):
             return lib.RUN(["git", "-C", str(v), *args], timeout=t)
 
         rel = asked = [Path(f).resolve().relative_to(v).as_posix() for f in files]
+        # Security: a directory (above all the vault root) would silently commit ignored files
+        # (.credentials.json, projects/**) and other sessions' half-writes. push accepts files only.
+        dirs = [r for r in asked if r in ("", ".") or (v / r).is_dir()]
+        if dirs:
+            res = {"status": "stage_failed",
+                   "detail": "directories are not accepted (list files): " + ", ".join(dirs)}
+            other = [r for r in asked if r not in dirs and (r == LIVE or r.startswith(LIVE + "/"))]
+            if other:
+                res["dropped"] = other
+            return res
         # The session registry is per machine: never committed, whether named directly or inside a listed folder.
         rel = [r for r in rel if r != LIVE and not r.startswith(LIVE + "/")]
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
@@ -311,19 +321,16 @@ def push(files, message, retries=15):
 
         if not rel:  # an empty pathspec would sweep other sessions' staged files into add/diff/commit
             return done("stage_failed", detail="no listed file exists or is tracked")
-        # A listed folder that contains the registry (handoffs, or the vault itself) must not sweep it in. The
-        # exclusion is added only then: with any exclude pathspec, git skips new files when a listed path is gone.
-        spec = rel + ([f":(exclude){LIVE}"] if any(r == "." or LIVE.startswith(r + "/") for r in rel) else [])
-        rc, out, err = g("add", "-f", "--", *spec)  # -f: NEW files under an ignored parent are silently skipped otherwise
+        rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
 
         def missing():
             return [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
 
-        new = g("diff", "--cached", "--quiet", "--", *spec)[0] != 0
+        new = g("diff", "--cached", "--quiet", "--", *rel)[0] != 0
         if new:
-            rc, out, err = g("commit", "-q", "-m", message, "--", *spec)  # pathspec commit: others' staged files stay out
+            rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
             if rc != 0:
                 return done("commit_failed", detail=(err or out)[-300:])
         if g("rev-parse", "--abbrev-ref", "@{u}")[0] != 0:  # no upstream: nothing to pull or push

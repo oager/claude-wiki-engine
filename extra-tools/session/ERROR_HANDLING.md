@@ -49,6 +49,9 @@ Last updated: 2026-09-28
   `autostash_conflict`, `commit_failed`, `push_failed`, `committed_local` for a git vault without an upstream); the
   sync skill has a recovery row for each. `trim` asserts
   that no content is lost and flags files over 100 KB.
+- `push` refuses directories (2026-09-28, security): any listed path that is a directory (or `.`/``) stages
+  nothing, all-or-nothing — a directory above the vault root would otherwise silently commit ignored files
+  (`.credentials.json`, `projects/**`) and other sessions' half-writes.
 
 ## 5. Text encoding
 - Handling: every text read/write and text-mode subprocess names `encoding="utf-8"`. Windows defaults to cp1252,

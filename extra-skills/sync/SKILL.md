@@ -36,8 +36,9 @@ handoff exists → **merge** (the safe direction). Never rewrite a handoff you c
 Re-read the handoff's `updated` immediately before writing it; if it changed since Step 0, merge again.
 **Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
 session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
-(`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. When naming another
-session, show `<id>/<pid>` when two ids match (a fork keeps its parent's id).
+(`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
+is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first, then set the focus.
+When naming another session, show `<id>/<pid>` when two ids match (a fork keeps its parent's id).
 
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
 it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and
@@ -191,7 +192,7 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 | `ok` | Report `sha`. If `missing` is non-empty, re-run push with those files. |
 | `nothing` | Report "nothing to commit" (nothing staged and nothing left unpushed). |
 | `locked` | Another session is syncing: retry once a minute later, else report the push as deferred. |
-| `stage_failed` | No listed file exists or is tracked (the list was wrong): fix the list and re-run. Nothing was staged. |
+| `stage_failed` | No listed file exists or is tracked, or a listed path is a directory (list files, never folders): fix the list and re-run. Nothing was staged. |
 | `dropped` non-empty (on any status) | These listed paths don't exist and were never committed, so they were skipped. Harmless only for an archive file `trim` never created; anything else means the file list is wrong — fix it and re-run push. |
 | `local` | The vault is not a git repo: the files are written locally and there is nothing to push. Report "vault: local". |
 | `committed_local` | No upstream to push to: committed locally, nothing pushed. Report `sha` — see `reason` for why (no remote / no upstream tracking / detached HEAD) and what to do. If `missing` is non-empty, re-run push with those files. |

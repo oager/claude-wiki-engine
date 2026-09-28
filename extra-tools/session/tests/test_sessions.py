@@ -1,4 +1,5 @@
 # ~/.claude/tools/session/tests/test_sessions.py
+import datetime as dt
 import json
 import os
 import socket
@@ -193,6 +194,20 @@ def test_alive_name_darwin_rc_127(monkeypatch):
     monkeypatch.setattr(sessions.procs, "_platform", lambda: "darwin")
     monkeypatch.setattr(sessions.lib, "RUN", lambda cmd: (127, "", ""))
     assert sessions.alive_name(789) == (None, None)
+
+
+def test_register_drops_stale_own_pid_entry(vault, me_env):
+    """P2 (2026-09-28): a *-<pid>.json entry of this host, >= EXPIRE_S old, is a dead session whose pid the
+    OS reused — register() must not adopt its focus/started, and must delete it (it is not this process's)."""
+    stale = _entry(vault, "old-session", 4242, age_s=8 * 86400, focus="old")
+    assert sessions.seen(KEY) is None  # the stale entry must never be read as this process's own state
+    res = sessions.register(KEY, "/x", "u")
+    assert res["registered"] is True
+    assert not stale.exists()
+    data = json.loads(_mine(vault).read_text(encoding="utf-8"))
+    assert data["focus"] == ""
+    started = dt.datetime.strptime(data["started"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=dt.UTC)
+    assert (dt.datetime.now(dt.UTC) - started).total_seconds() < 120
 
 
 def test_own_entry_old_dead_survives(vault, me_env, monkeypatch):

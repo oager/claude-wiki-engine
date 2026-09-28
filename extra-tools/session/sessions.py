@@ -34,17 +34,34 @@ def live_dir(key):
 
 
 def _own_entries(d, pid, host):
-    """This process's entries, newest first. /clear gives a running session a new id but keeps its pid, so
-    identity is (host, pid): every `*-<pid>.json` written from this host is this process under some id."""
+    """This process's LIVE entries, newest first. /clear gives a running session a new id but keeps its pid, so
+    identity is (host, pid): every fresh `*-<pid>.json` written from this host is this process under some id.
+    An entry not rewritten for EXPIRE_S is a dead session whose pid the OS reused, not this process: it is
+    excluded here (never adopted as this process's state) and register() deletes it separately."""
     found = []
     for p in d.glob(f"*-{pid}.json") if d.is_dir() else []:
         data = None if p.name.startswith(".") else _read(p)
         if data and data.get("host") == host and data.get("pid") == pid:
             try:
-                found.append((p.stat().st_mtime, p, data))
+                mtime = p.stat().st_mtime
             except OSError:
-                pass
+                continue
+            if time.time() - mtime >= EXPIRE_S:
+                continue
+            found.append((mtime, p, data))
     return [(p, data) for _, p, data in sorted(found, key=lambda t: t[0], reverse=True)]
+
+
+def _own_pid_files(d, pid, host):
+    """Every `*-<pid>.json` of this host under `pid`, any age — used only to delete stale ones on register()."""
+    found = []
+    for p in d.glob(f"*-{pid}.json") if d.is_dir() else []:
+        if p.name.startswith("."):
+            continue
+        data = _read(p)
+        if data and data.get("host") == host and data.get("pid") == pid:
+            found.append(p)
+    return found
 
 
 def _mine_path(key):
@@ -114,16 +131,16 @@ def register(key, root, updated_seen, focus=None):
         if not gi.exists():
             gi.write_text("*\n", encoding="utf-8")
         host = socket.gethostname()
-        own = _own_entries(d, m[1], host)  # this process under its current id or one it had before a /clear
+        own = _own_entries(d, m[1], host)  # this process, LIVE only: current id or one it had before a /clear
         old = own[0][1] if own else {}
         now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%MZ")
         _write(p, {"session_id": m[0], "pid": m[1], "host": host,
                    "started": old.get("started") or now, "updated_seen": updated_seen,
                    "focus": old.get("focus", "") if focus is None else focus,
                    "root": str(root), "platform": procs._platform()})
-        for q, _ in own:
+        for q in _own_pid_files(d, m[1], host):  # older ids AND stale (pid-reused) files: one entry per process
             if q != p:
-                _unlink(q)  # this process's older ids: one entry per process
+                _unlink(q)
     except OSError as e:
         return {"registered": False, "reason": f"registry not writable: {e}"[:160]}
     return {"registered": True, "path": str(p)}
