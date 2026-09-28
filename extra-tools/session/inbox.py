@@ -77,6 +77,9 @@ def mark_done(paths):
         while dst.exists():
             dst, n = p.parent / "done" / f"{p.stem}-{n}{p.suffix}", n + 1
         dst.parent.mkdir(exist_ok=True)
-        p.replace(dst)
+        try:
+            p.replace(dst)
+        except FileNotFoundError:
+            continue  # another session moved it between the check and the move
         staged += [str(p), str(dst)]
     return staged

@@ -15,8 +15,9 @@ Update all persistent memory and status files for the current project, then push
 python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
 ```
 
-One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `sessions`, `updated_seen`, `legacy`, `git {dirty,
-dirty_count, unpushed, no_pr_branches, ci_pending}`, `running {supported, procs, via, reason}`, `drift`,
+One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `sessions {me, registered, focus,
+others}`, `updated_seen`, `legacy`, `git {dirty, dirty_count, unpushed, no_pr_branches, ci_pending}`,
+`running {supported, procs, others_procs, via, reason}`, `drift`,
 `inbox_untriaged`, `inbox_notes`, `repo_handoff`, `repo_sha`, `vault_sha`.
 `identity.how == "ambiguous"` →
 ask which project, re-run with `--project <key>`. Keep this `vault_sha`: it is recorded **before** this session's
@@ -30,10 +31,13 @@ or in the inbox.
 **Concurrent /sync:** compare `updated_seen` (the handoff version this session last read or wrote) with
 `handoff_updated` (the version on disk now), both from Step 0. Different → another session synced since this one last
 looked: **merge** — keep their new Next up, Open items and Standing notes, add this session's, re-rank — never
-rewrite over them, and say `merged with a concurrent /sync (<updated_by>)` in the report. `updated_seen` null (no
-session id) → fall back to the value you read at `/preflight`.
+rewrite over them, and say `merged with a concurrent /sync (<updated_by>)` in the report. `updated_seen` null and the
+handoff exists → **merge** (the safe direction). Never rewrite a handoff you cannot prove you last read.
+Re-read the handoff's `updated` immediately before writing it; if it changed since Step 0, merge again.
 **Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
-session's focus) and leave items in other lanes untouched.
+session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
+(`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. When naming another
+session, show `<id>/<pid>` when two ids match (a fork keeps its parent's id).
 
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
 it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and

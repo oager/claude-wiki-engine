@@ -73,10 +73,12 @@ they keep in the repo. Summarize what changed under you.
   raised false outage alarms before).
 - A port-serving process is alive when its port is (a `port` check), not when `pgrep` finds it.
 - `global.user.profile_error` set: `User profile broken: <error>` on the Health line; user checks were skipped.
-- `sessions.others` non-empty: `⚠ Also open here: N session(s) — <id> (<focus or "no focus">), …` on the Health line.
-  `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`. When other
-  sessions exist and this one has no focus yet, take a one-line focus from the user's request (or ask for one) and run
-  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When they exist, list this
+- `sessions.others` non-empty: `⚠ Also open here: N session(s) — <id> (<focus or "no focus">), …` on the Health line
+  (show `<id>/<pid>` when an id equals `sessions.me`: a fork keeps its parent's id).
+  `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`.
+  `sessions.focus` empty AND (`sessions.others` non-empty OR the user's first request names a clear topic): take a
+  one-line focus from that request (or ask for one) and run
+  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When others exist, list this
   session's lane (`[<focus>]` items) first in Next up.
 - `sessions.reason` set (no session id / registry not writable): one line on the Health line; the rest works as before.
 

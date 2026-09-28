@@ -33,14 +33,31 @@ def live_dir(key):
     return lib.vault() / "handoffs" / ".live" / key
 
 
+def _own_entries(d, pid, host):
+    """This process's entries, newest first. /clear gives a running session a new id but keeps its pid, so
+    identity is (host, pid): every `*-<pid>.json` written from this host is this process under some id."""
+    found = []
+    for p in d.glob(f"*-{pid}.json") if d.is_dir() else []:
+        data = None if p.name.startswith(".") else _read(p)
+        if data and data.get("host") == host and data.get("pid") == pid:
+            try:
+                found.append((p.stat().st_mtime, p, data))
+            except OSError:
+                pass
+    return [(p, data) for _, p, data in sorted(found, key=lambda t: t[0], reverse=True)]
+
+
 def _mine_path(key):
+    """This process's newest entry, or the path it would be written to under the current session id."""
     m = me()
     if not m:
         return None
     try:
-        return live_dir(key) / f"{m[0]}-{m[1]}.json"
+        d = live_dir(key)
     except ValueError:
         return None
+    own = _own_entries(d, m[1], socket.gethostname())
+    return own[0][0] if own else d / f"{m[0]}-{m[1]}.json"
 
 
 def _read(p):
@@ -96,12 +113,17 @@ def register(key, root, updated_seen, focus=None):
         gi = d.parent / ".gitignore"
         if not gi.exists():
             gi.write_text("*\n", encoding="utf-8")
-        old = _read(p) or {}
+        host = socket.gethostname()
+        own = _own_entries(d, m[1], host)  # this process under its current id or one it had before a /clear
+        old = own[0][1] if own else {}
         now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%MZ")
-        _write(p, {"session_id": m[0], "pid": m[1], "host": socket.gethostname(),
+        _write(p, {"session_id": m[0], "pid": m[1], "host": host,
                    "started": old.get("started") or now, "updated_seen": updated_seen,
                    "focus": old.get("focus", "") if focus is None else focus,
                    "root": str(root), "platform": procs._platform()})
+        for q, _ in own:
+            if q != p:
+                _unlink(q)  # this process's older ids: one entry per process
     except OSError as e:
         return {"registered": False, "reason": f"registry not writable: {e}"[:160]}
     return {"registered": True, "path": str(p)}
@@ -120,9 +142,14 @@ def set_focus(key, text):
     return {"ok": True, "focus": data["focus"]}
 
 
-def seen(key):
+def own(key):
+    """This session's registry entry (dict), or None when it is not registered."""
     p = _mine_path(key)
-    data = _read(p) if p else None
+    return _read(p) if p else None
+
+
+def seen(key):
+    data = own(key)
     return data.get("updated_seen") if data else None
 
 
@@ -132,6 +159,7 @@ def others(key):
         d = live_dir(key)
     except ValueError:
         return []
+    m = me()
     mine, host, out = _mine_path(key), socket.gethostname(), []
     for p in sorted(d.glob("*.json")) if d.is_dir() else []:
         if p.name.startswith(".") or p == mine:
@@ -147,6 +175,8 @@ def others(key):
             continue
         if data.get("host") != host:
             continue  # another machine's entry in a shared folder: not ours to judge
+        if m and data.get("pid") == m[1]:
+            continue  # this process under an id it had before a /clear
         alive, name = alive_name(data.get("pid"))
         if not (alive is True and name and procs.is_claude(name) and age < EXPIRE_S):
             if _should_delete(p):

@@ -37,6 +37,7 @@ from procs import is_claude as _is_claude
 from procs import proc_stat as _stat
 
 SKIP_COMM = SHELLS | {"claude", "git", "ssh", "less"}
+LIVE = "handoffs/.live"  # the per-machine session registry (vault-relative)
 
 default_branch = lib.default_branch
 
@@ -193,10 +194,11 @@ def collect_close(cwd, project=None):
     is_repo = lib.git(root, "rev-parse", "--git-dir") is not None
     notes = inbox.list_notes(ident["key"]) + inbox.list_notes("_user")
     others = sessions.others(ident["key"])
-    m = sessions.me()
+    m, own = sessions.me(), sessions.own(ident["key"])
     return {
         "identity": ident,
-        "sessions": {"me": m[0][:8] if m else None, "others": others},
+        "sessions": {"me": m[0][:8] if m else None, "registered": own is not None,
+                     "focus": (own or {}).get("focus") or "", "others": others},
         "updated_seen": sessions.seen(ident["key"]),  # the handoff 'updated' this session last read or wrote
         "handoff": {"path": str(p), "exists": p.is_file(),
                     "size_kb": round(p.stat().st_size / 1024, 1) if p.is_file() else 0},
@@ -295,7 +297,8 @@ def push(files, message, retries=15):
             return lib.RUN(["git", "-C", str(v), *args], timeout=t)
 
         rel = asked = [Path(f).resolve().relative_to(v).as_posix() for f in files]
-        rel = [r for r in rel if not r.startswith("handoffs/.live/")]  # the session registry is per machine: never committed
+        # The session registry is per machine: never committed, whether named directly or inside a listed folder.
+        rel = [r for r in rel if r != LIVE and not r.startswith(LIVE + "/")]
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
         rel = [r for r in rel if (v / r).exists() or g("ls-files", "--error-unmatch", "--", r)[0] == 0]
         dropped = [r for r in asked if r not in rel]  # never merged into `missing`: /sync retries on `missing`
@@ -308,16 +311,19 @@ def push(files, message, retries=15):
 
         if not rel:  # an empty pathspec would sweep other sessions' staged files into add/diff/commit
             return done("stage_failed", detail="no listed file exists or is tracked")
-        rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
+        # A listed folder that contains the registry (handoffs, or the vault itself) must not sweep it in. The
+        # exclusion is added only then: with any exclude pathspec, git skips new files when a listed path is gone.
+        spec = rel + ([f":(exclude){LIVE}"] if any(r == "." or LIVE.startswith(r + "/") for r in rel) else [])
+        rc, out, err = g("add", "-f", "--", *spec)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
 
         def missing():
             return [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
 
-        new = g("diff", "--cached", "--quiet", "--", *rel)[0] != 0
+        new = g("diff", "--cached", "--quiet", "--", *spec)[0] != 0
         if new:
-            rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
+            rc, out, err = g("commit", "-q", "-m", message, "--", *spec)  # pathspec commit: others' staged files stay out
             if rc != 0:
                 return done("commit_failed", detail=(err or out)[-300:])
         if g("rev-parse", "--abbrev-ref", "@{u}")[0] != 0:  # no upstream: nothing to pull or push

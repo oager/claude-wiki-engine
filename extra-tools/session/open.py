@@ -186,6 +186,7 @@ def session_block(key, root, updated):
             res["reason"] = r["reason"]
     else:
         res["reason"] = "no session id"
+    res["focus"] = (sessions.own(key) or {}).get("focus") or ""  # this session's own lane, "" when none is set
     res["others"] = sessions.others(key)
     scan = procs.claude_sessions_in(root)  # Linux only: Claude processes in this folder, registered or not
     if scan is not None:
