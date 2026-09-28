@@ -78,9 +78,19 @@ def _is_repo_dir(p):
         return False
 
 
+def git_paths(root, *names):
+    """Where git keeps these state files (rebase-merge, MERGE_HEAD...). A worktree or `.git`-file checkout keeps
+    them outside `<root>/.git/`, so ask git; if git can't answer, fall back to `<root>/.git/<name>`."""
+    args = [a for n in names for a in ("--git-path", n)]
+    rc, out, _ = RUN(["git", "-C", str(root), "rev-parse", *args])
+    lines = out.splitlines() if rc == 0 else []
+    if len(lines) != len(names):
+        return [Path(root) / ".git" / n for n in names]
+    return [Path(root) / ln for ln in lines]  # relative to root, or absolute (then the join keeps it as is)
+
+
 def rebase_in_progress(root):
-    git_dir = Path(root) / ".git"
-    return (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
+    return any(p.exists() for p in git_paths(root, "rebase-merge", "rebase-apply"))
 
 
 def default_branch(root):
@@ -176,11 +186,22 @@ def host_target(host, ids):
     return h.get("ssh", host)
 
 
+def safe_arg(value, what):
+    """A Profile value that becomes a command argument must not parse as an option (`-oProxyCommand=...`).
+    Raises ValueError, which the check collectors turn into an `unknown` "bad check" entry."""
+    if not isinstance(value, str):
+        raise TypeError(f"{what} is not a string")
+    if value.startswith("-"):
+        raise ValueError(f"{what} starts with '-'")
+    return value
+
+
 def on_host(host, cmd, ids, timeout=8):
     t = host_target(host, ids)
     if t is None:
         return RUN(cmd, timeout=timeout)
-    return RUN(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", t, shlex.join(cmd)], timeout=timeout)
+    safe_arg(t, "ssh target")
+    return RUN(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", t, shlex.join(cmd)], timeout=timeout)
 
 
 # --- handoff files -------------------------------------------------------------

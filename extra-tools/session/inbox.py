@@ -59,16 +59,27 @@ def list_notes(key):
     return notes
 
 
-def mark_done(paths):
+def mark_done(paths, refused=None):
     """Move triaged notes to done/; return every path the vault push must stage (the old and the new).
 
-    Only notes inside the vault inbox are moved (all paths are checked before any moves), and an earlier
-    done/<name> is never overwritten: the new one gets a -2, -3... suffix."""
+    Only notes are moved: a regular `.md` file (not a symlink) directly in handoffs/inbox/<key>/. Anything else
+    (a directory, which would move a whole inbox; done/ entries; paths outside the inbox) is skipped and, when
+    `refused` is a list, appended to it; the rest still move. An earlier done/<name> is never overwritten: the
+    new one gets a -2, -3... suffix."""
     base = (lib.vault() / "handoffs" / "inbox").resolve()
-    notes = [Path(s) for s in paths]
-    for p in notes:
-        if not p.resolve().is_relative_to(base):
-            raise ValueError(f"not an inbox note: {p}")
+    notes = []
+    for s in paths:
+        p = Path(s)
+        try:
+            parent = p.parent.resolve()
+            ok = (p.suffix == ".md" and parent.parent == base and bool(_KEY.fullmatch(parent.name))
+                  and not p.is_symlink() and (p.is_file() or not p.exists()))
+        except (OSError, ValueError):
+            ok = False
+        if ok:
+            notes.append(p)
+        elif refused is not None:
+            refused.append(s)
     staged = []
     for p in notes:
         if not p.exists():

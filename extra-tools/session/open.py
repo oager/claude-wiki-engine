@@ -32,7 +32,7 @@ _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 def vault_state():
     v = str(lib.vault())
     _, out, _ = lib.RUN(["git", "-C", v, "status", "--porcelain"])
-    stuck = ((lib.vault() / ".git" / "MERGE_HEAD").exists() or lib.rebase_in_progress(lib.vault())
+    stuck = (lib.git_paths(v, "MERGE_HEAD")[0].exists() or lib.rebase_in_progress(v)
              or any(line[:2] in UNMERGED for line in out.splitlines()))
     if stuck:
         return {"pull": "skipped", "stuck_merge": True}
@@ -251,7 +251,8 @@ def _check(source, kind, target, status, detail, **extra):
 
 def service_check(s, ids, source):
     scope = ["--user"] if s.get("scope", "user") == "user" else []
-    rc, out, err = lib.on_host(s.get("host"), ["systemctl", *scope, "is-active", s["unit"]], ids)
+    unit = lib.safe_arg(s["unit"], "unit")
+    rc, out, err = lib.on_host(s.get("host"), ["systemctl", *scope, "is-active", "--", unit], ids)
     if rc == 127:
         return _check(source, "service", s["unit"], "unknown", "systemctl unavailable")
     state = out.strip() or err.strip()[:80] or f"rc={rc}"
@@ -270,7 +271,8 @@ def _path(root, p):
 
 
 def health_check(h, ids):
-    rc, body, _ = lib.on_host(h.get("host"), ["curl", "-s", "-m", "5", h["url"]], ids)
+    url = lib.safe_arg(h["url"], "url")
+    rc, body, _ = lib.on_host(h.get("host"), ["curl", "-s", "-m", "5", "--", url], ids)
     if rc in (124, 127, 255):  # curl/ssh missing or timed out: we learned nothing about the service
         return _check("profile", "health", h["url"], "unknown", f"check unavailable (rc={rc})")
     ok = rc == 0 and (h.get("expect") is None or h["expect"] in body)
@@ -390,11 +392,34 @@ def freshness_check(root):
                   f"{age_h:.1f}h old")
 
 
+_TARGET = {"services": "unit", "health": "url", "ports": "port", "queues": "name", "logs": "path", "metrics": "name"}
+_KIND = {"services": "service", "health": "health", "ports": "port", "queues": "queue", "logs": "log",
+         "metrics": "metric"}
+
+
+def _profile_checks(profile, key, fn):
+    """Run fn on each Profile entry under key. A malformed entry is one `unknown` check, never a crashed
+    briefing (as user_checks does for _USER.md)."""
+    entries = profile.get(key) or []
+    if not isinstance(entries, list):
+        return [_check("profile", _KIND[key], key, "unknown", f"bad check: {key} is not a list")]
+    res = []
+    for e in entries:
+        try:
+            if not isinstance(e, dict):
+                raise TypeError("not an object")
+            res.append(fn(e))
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            target = e.get(_TARGET[key], "?") if isinstance(e, dict) else "?"
+            res.append(_check("profile", _KIND[key], str(target), "unknown", f"bad check: {err}"[:120]))
+    return res
+
+
 def run_checks(type_, root, profile, ids):
     checks = []
     services = profile.get("services") or []
     if services:
-        checks += [service_check(s, ids, "profile") for s in services]
+        checks += _profile_checks(profile, "services", lambda s: service_check(s, ids, "profile"))
     elif type_ in ("trading-bot", "web-app") and lib.has_systemctl():
         tok = unit_token(root)
         matched = [u for u in list_units(None, ids) if tok and tok in u["unit"]]
@@ -406,11 +431,11 @@ def run_checks(type_, root, profile, ids):
         if not matched:
             checks.append(_check("guessed", "service", f"*{tok}*", "unknown",
                                  "no unit matched the repo name — unverified; declare services in the Profile"))
-    checks += [health_check(h, ids) for h in profile.get("health", [])]
-    checks += [port_check(p, ids) for p in profile.get("ports", [])]
-    checks += [queue_check(q, root) for q in profile.get("queues", [])]
-    checks += [log_check(lg, root) for lg in profile.get("logs", [])]
-    checks += [metric_check(m, root) for m in profile.get("metrics", [])]
+    checks += _profile_checks(profile, "health", lambda h: health_check(h, ids))
+    checks += _profile_checks(profile, "ports", lambda p: port_check(p, ids))
+    checks += _profile_checks(profile, "queues", lambda q: queue_check(q, root))
+    checks += _profile_checks(profile, "logs", lambda lg: log_check(lg, root))
+    checks += _profile_checks(profile, "metrics", lambda m: metric_check(m, root))
     if type_ == "trading-bot" and not profile.get("logs"):
         checks.append(freshness_check(root))
     return checks

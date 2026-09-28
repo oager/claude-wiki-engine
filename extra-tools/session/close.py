@@ -3,6 +3,7 @@
 
     close.py [--cwd P] [--project KEY]        facts for writing the handoff (JSON)
     close.py trim <handoff.md>                 archive Last session entries older than 14 days
+    close.py check-profile <handoff.md>        {"profile_error": null | "..."}: does the Profile json parse
     close.py push --message M --files F...     locked, stage-only-these-files vault push
     close.py note --to K --from F --subject S [--file P]   write + push a vault inbox note
     close.py inbox-done --files P...           move triaged inbox notes to done/ (stage, don't push)
@@ -14,9 +15,11 @@ Always exits 0 and prints one JSON object. Design: the "Session handoff" section
 """
 import argparse
 import datetime as dt
+import fnmatch
 import json
 import os
 import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -164,21 +167,32 @@ def deploy_drift(root, profile, ids):
     """A service that deploys from this repo but started before the latest commit = pulled, not restarted."""
     out = []
     last = lib.git(root, "log", "-1", "--format=%ct")
-    for s in profile.get("services", []):
-        if not s.get("deploys_from_repo"):
-            continue
-        if lib.host_target(s.get("host"), ids) is not None:
-            out.append({"unit": s["unit"], "drift": None, "detail": "remote host — not checked"})
-            continue
-        scope = ["--user"] if s.get("scope", "user") == "user" else []
-        rc, o, _ = lib.RUN(["systemctl", *scope, "show", s["unit"], "-p", "ActiveEnterTimestamp", "--timestamp=unix"])
-        m = re.search(r"@(\d+)", o)
-        if rc != 0 or not m or not last:
-            out.append({"unit": s["unit"], "drift": None, "detail": "start time unavailable"})
-            continue
-        started = int(m.group(1))
-        out.append({"unit": s["unit"], "drift": started < int(last), "started": started, "last_commit": int(last)})
+    services = profile.get("services") or []
+    if not isinstance(services, list):
+        return [{"unit": "?", "drift": None, "detail": "bad check: services is not a list"}]
+    for s in services:
+        try:  # a malformed Profile entry is skipped with its reason, never a crashed /sync
+            if not isinstance(s, dict):
+                raise TypeError("not an object")
+            if s.get("deploys_from_repo"):
+                out.append(_drift_one(s, ids, last))
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            unit = s.get("unit", "?") if isinstance(s, dict) else "?"
+            out.append({"unit": str(unit), "drift": None, "detail": f"bad check: {e}"[:120]})
     return out
+
+
+def _drift_one(s, ids, last):
+    unit = lib.safe_arg(s["unit"], "unit")
+    if lib.host_target(s.get("host"), ids) is not None:
+        return {"unit": unit, "drift": None, "detail": "remote host — not checked"}
+    scope = ["--user"] if s.get("scope", "user") == "user" else []
+    rc, o, _ = lib.RUN(["systemctl", *scope, "show", "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--", unit])
+    m = re.search(r"@(\d+)", o)
+    if rc != 0 or not m or not last:
+        return {"unit": unit, "drift": None, "detail": "start time unavailable"}
+    started = int(m.group(1))
+    return {"unit": unit, "drift": started < int(last), "started": started, "last_commit": int(last)}
 
 
 def collect_close(cwd, project=None):
@@ -268,6 +282,42 @@ def trim(path, today=None, keep_days=14):
 
 # --- push ------------------------------------------------------------------------------
 
+SECRET_NAMES = (".credentials.json", ".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*")
+
+
+def _secret_shaped(rel):
+    name = rel.rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatchcase(name, pat) for pat in SECRET_NAMES)
+
+
+def _under_project_memory(rel):
+    parts = rel.split("/")  # projects/<x>/memory/... is the one ignored place `add -f` is meant for
+    return len(parts) >= 4 and parts[0] == "projects" and parts[2] == "memory"
+
+
+def _break_stale(lock, st):
+    """Remove a lock judged stale from `st`, unless another waiter replaced it with a fresh one meanwhile.
+
+    rmdir-by-name would race: two waiters both see the stale lock, the first rmdirs + mkdirs its own, the second
+    then rmdirs the first one's FRESH lock. Instead rename it aside (atomic, one winner), then check the renamed
+    dir is still the one judged stale (inode + mtime: inodes are reused at once after rmdir); if not, put it back.
+    """
+    aside = lock.with_name(f"{lock.name}.stale-{os.getpid()}-{secrets.token_hex(4)}")
+    try:
+        os.rename(lock, aside)
+    except OSError:
+        return False  # gone already, or another waiter moved it first
+    try:
+        now = aside.stat()
+        if (now.st_ino, now.st_mtime_ns) != (st.st_ino, st.st_mtime_ns):
+            os.rename(aside, lock)  # someone's fresh lock: give it back and keep waiting
+            return False
+        aside.rmdir()
+    except OSError:
+        return False
+    return True
+
+
 def push(files, message, retries=15):
     """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
 
@@ -284,8 +334,8 @@ def push(files, message, retries=15):
             break
         except FileExistsError:
             try:
-                if time.time() - lock.stat().st_mtime > 300:  # stale: its owner died mid-sync
-                    lock.rmdir()
+                st = lock.stat()
+                if time.time() - st.st_mtime > 300 and _break_stale(lock, st):  # stale: its owner died mid-sync
                     continue
             except OSError:
                 pass
@@ -293,12 +343,14 @@ def push(files, message, retries=15):
     else:
         return {"status": "locked"}
     try:
-        def g(*args, t=8):
+        def g(*args, t=8, literal=True):
             # --literal-pathspecs: without it git treats *, ?, [...] in a listed path as its OWN glob magic
             # (independent of the shell), so an unmatched shell glob like "$V/*" reaches git as a literal
             # wildcard and `add -f` sweeps in ignored files (.credentials.json, the .live registry) and
             # other sessions' half-writes. Security fix, 2026-09-28.
-            return lib.RUN(["git", "--literal-pathspecs", "-C", str(v), *args], timeout=t)
+            # literal=False only for check-ignore: it takes plain pathnames (no glob magic) and dies with
+            # "pathspec magic not supported" (rc 128) under --literal-pathspecs.
+            return lib.RUN(["git", *(["--literal-pathspecs"] if literal else []), "-C", str(v), *args], timeout=t)
 
         resolved, outside = [], []
         for f in files:
@@ -345,9 +397,34 @@ def push(files, message, retries=15):
 
         if not rel:  # an empty pathspec would sweep other sessions' staged files into add/diff/commit
             return done("stage_failed", detail="no listed file exists or is tracked")
+        # Security: `add -f` stages ignored files too, so a listed secret (.credentials.json, .env) would be
+        # committed. -f is meant only for new files under projects/<x>/memory/ (ignored parent, re-included).
+        existing = [r for r in rel if (v / r).exists()]
+        bad = []
+        for r in existing:
+            if _secret_shaped(r):
+                bad.append(r)
+                continue
+            rc = g("check-ignore", "-q", "--no-index", "--", r, literal=False)[0]
+            if rc not in (0, 1):  # cannot tell: refuse rather than force-add blind
+                bad.append(f"{r} (ignore state unknown, rc={rc})")
+            elif rc == 0 and not _under_project_memory(r):
+                bad.append(r)
+        if bad:
+            return done("stage_failed", detail="ignored or secret-shaped files are not accepted: " + ", ".join(bad))
         rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
+        # `add` exits 0 yet stages nothing for a file inside a nested repository: verify every existing path
+        # landed in the index, else unstage what this call staged (all-or-nothing) and say which path.
+        rc, out, _ = g("ls-files", "-z", "--", *existing) if existing else (0, "", "")
+        unstaged = [r for r in existing if r not in set(out.split("\0"))] if rc == 0 else existing
+        if unstaged:
+            staged_now = [r for r in rel if r not in unstaged]
+            if staged_now:
+                g("restore", "--staged", "--", *staged_now)
+            return done("stage_failed", detail="not stageable (e.g. inside a nested repository): "
+                        + ", ".join(unstaged))
 
         def missing():
             return [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
@@ -405,6 +482,15 @@ def write_repo_handoff(cwd, project=None):
     return res
 
 
+def check_profile(path):
+    """Does this handoff's Profile json still parse? /sync runs it after every handoff write."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        return {"profile_error": f"unreadable: {type(e).__name__}: {e}"}
+    return {"profile_error": lib.parse_handoff(text)["profile_error"]}
+
+
 def session_cmd(cwd, project, action, text):
     ident = lib.resolve_identity(cwd, project)
     if not ident.get("key"):
@@ -423,6 +509,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
     t = sub.add_parser("trim")
     t.add_argument("path")
+    cp = sub.add_parser("check-profile")
+    cp.add_argument("path")
     pu = sub.add_parser("push")
     pu.add_argument("--message", required=True)
     pu.add_argument("--files", nargs="+", required=True)
@@ -441,6 +529,8 @@ def main(argv=None):
     try:
         if a.cmd == "trim":
             res = trim(a.path)
+        elif a.cmd == "check-profile":
+            res = check_profile(a.path)
         elif a.cmd == "push":
             res = push(a.files, a.message)
         elif a.cmd == "note":
@@ -452,10 +542,11 @@ def main(argv=None):
             p = inbox.write_note(a.to, a.from_, a.subject, body)
             res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
         elif a.cmd == "inbox-done":
-            staged = inbox.mark_done(a.files)
+            refused = []
+            staged = inbox.mark_done(a.files, refused)
             moved = set(staged[0::2])
-            res = {"moved": len(moved), "stage": staged,
-                   "already_done": [f for f in a.files if str(Path(f)) not in moved]}
+            res = {"moved": len(moved), "stage": staged, "refused": refused,
+                   "already_done": [f for f in a.files if str(Path(f)) not in moved and f not in refused]}
         elif a.cmd == "repo-handoff":
             res = write_repo_handoff(a.cwd, a.project)
         elif a.cmd == "session":

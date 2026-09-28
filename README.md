@@ -109,10 +109,20 @@ auto-update with the repo.
 - **Shared projects:** set `"shared": true` in the project Profile and `/sync` also writes a public
   `.claude/HANDOFF.md` (leak-guarded) for collaborators.
 - **Plain setups work:** no git in `~/.claude`, one machine, no systemd — the extras switch on when present.
-- **Updating:** `python install.py --update` refreshes extras tagged `source: claude-wiki-engine`, each backed up to
-  a timestamped copy under `<config>/.wikibak/` first (never under `skills/`, so an old backup can't be picked up as
-  a duplicate skill). Copies from before this version are untagged: move the old copy out of `skills/` (rename or
-  delete it), then run `python install.py --extras preflight,sync` (components already present are skipped).
+- **Updating:** `python install.py --update` refreshes skills tagged `source: claude-wiki-engine` (core and extras)
+  and the handoff templates; any that you edited is backed up to a timestamped copy under `<config>/.wikibak/` first
+  (never under `skills/`, so an old backup can't be picked up as a duplicate skill). `handoffs/_USER.md` is never
+  touched. Untouched copies from older versions are recognised by their exact bytes; any other untagged skill is
+  treated as yours and skipped. To swap one for the engine's: move it out of `skills/` (rename or delete it), then run
+  `python install.py` (plus `--extras <name>` for an extra, e.g. `--extras preflight,sync`; components already present
+  are skipped).
+- **Your own `/preflight` or `/sync` wins:** if `skills/preflight` or `skills/sync` is your own skill, the installer
+  leaves it alone and skips the session system as a whole: both engine session skills, `tools/session` and the
+  session-handoff CLAUDE.md block, so nothing points the model at your skill. `--update` does the same and removes
+  a session-handoff block an earlier install left in CLAUDE.md. A note says how to switch.
+- **Other locations:** the skills call `~/.claude/tools/session/` by that path, and the tools keep handoffs in
+  `~/.claude` unless `CLAUDE_VAULT` is set. For an `--into-repo` or `CLAUDE_DIR` install, edit that path in
+  `skills/preflight` and `skills/sync` (the installer prints the exact path); `CLAUDE_VAULT` moves the vault only.
 - **Converting an old `SESSION_RESUME.md`:** the first `/sync` does it. Archive every dated section, carry every rule
   unless shown obsolete, list only verified service names, give ports an `owner`, write Current state from live data,
   and keep Warnings honest.
@@ -148,7 +158,8 @@ run, repeat/idempotent calls don't clobber it, and unrelated user keys are prese
 
 ## Notes
 - Defaults to **copy** (works everywhere). `--mode symlink` is opt-in and falls back to copy if the OS blocks symlinks.
-- `--update` refreshes engine-owned files only; your content and edits are never touched. It also
+- `--update` refreshes engine-owned files only; your content is never touched, and an edited engine file is backed
+  up under `<config>/.wikibak/` before it is replaced. It also
   **re-wires `settings.json` (self-healing)**: a stale/broken hook command from an older install —
   e.g. a pre-fix Windows backslash path — is repaired in place, not left behind.
 - The `Stop` nudge fires **once per session** (a tmp flag keyed on the session id, or the transcript

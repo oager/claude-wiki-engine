@@ -3,10 +3,15 @@
     python -m unittest discover tests
 """
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
+import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -213,7 +218,13 @@ class SessionExtrasTest(unittest.TestCase):
 
     def test_non_default_config_base_warns_about_claude_vault(self):
         plan = self.inst.build_plan(self.cfg(dry_run=True))
-        self.assertTrue(any("set CLAUDE_VAULT to" in n and str(self.tmp) in n for n in plan.notes))
+        notes = [n for n in plan.notes if "CLAUDE_VAULT" in n]
+        self.assertEqual(len(notes), 1)
+        # CLAUDE_VAULT alone cannot fix it: the skills call ~/.claude/tools/session by that fixed path.
+        self.assertNotIn("set CLAUDE_VAULT to", notes[0])
+        for part in ("~/.claude/tools/session", str(self.tmp / "tools" / "session"), "skills/preflight",
+                     "skills/sync", "vault only"):
+            self.assertIn(part, notes[0])
         plan = self.inst.build_plan(self.cfg(dry_run=True, extra_skills=["karpathy-guidelines"]))
         self.assertFalse(any("CLAUDE_VAULT" in n for n in plan.notes))
 
@@ -241,6 +252,226 @@ class SessionExtrasTest(unittest.TestCase):
 
         run_sequence()
         self.assertEqual(cmd.read_bytes(), raw)
+
+
+USER_SYNC = "---\nname: sync\ndescription: my own end-of-day ritual\n---\nmine\n"
+
+
+class ReviewFixesTest(unittest.TestCase):
+    """PR #5 review: session wiring vs a user's own sync/preflight, template backups, core-skill updates."""
+
+    def setUp(self):
+        self.inst = load_installer()
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.skills = self.tmp / "skills"
+
+    def cfg(self, **kw):
+        base = {"dry_run": False, "config_base": self.tmp, "mode": "copy", "memory": self.tmp / "memory",
+                "content_repo": None, "claude_md": True, "skills": [], "force_skills": False, "hooks": False,
+                "extra_skills": ["preflight", "sync"], "no_pull": True, "yes": True}
+        return {**base, **kw}
+
+    def update(self, **kw) -> str:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.inst.do_update(self.cfg(extra_skills=[], **kw))
+        return out.getvalue()
+
+    def own_sync(self):
+        (self.skills / "sync").mkdir(parents=True)
+        (self.skills / "sync/SKILL.md").write_text(USER_SYNC, encoding="utf-8")
+
+    def claude_md(self) -> str:
+        p = self.tmp / "CLAUDE.md"
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def assert_session_not_wired(self):
+        self.assertFalse((self.tmp / "tools/session").exists())
+        self.assertNotIn(self.inst.SESSION_START, self.claude_md())
+        self.assertEqual((self.skills / "sync/SKILL.md").read_text(encoding="utf-8"), USER_SYNC)
+
+    # --- fix 1: never wire the session system to the user's own /sync or /preflight ---
+
+    def test_install_with_own_sync_does_not_wire_session(self):
+        self.own_sync()
+        env = {**os.environ, "CLAUDE_DIR": str(self.tmp), "HOME": str(self.tmp / "home"),
+               "USERPROFILE": str(self.tmp / "home")}
+        r = subprocess.run([sys.executable, str(REPO / "install.py"), "--extras", "preflight,sync", "-y",
+                            "--no-hooks"], env=env, capture_output=True, text=True, encoding="utf-8",
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assert_session_not_wired()
+        # the non-conflicting engine skill is held back too: /preflight without its tools cannot run
+        self.assertFalse((self.skills / "preflight").exists())
+        notes = [ln for ln in r.stdout.splitlines() if "session handoff" in ln and "skills/sync" in ln]
+        self.assertEqual(len(notes), 1, r.stdout)
+        self.assertIn("as a whole", notes[0])
+        self.assertIn("--extras preflight,sync", notes[0])
+
+    def test_update_with_own_sync_does_not_wire_session(self):
+        self.own_sync()
+        (self.skills / "preflight").mkdir()
+        shutil.copy2(self.inst.ENGINE / "extra-skills/preflight/SKILL.md", self.skills / "preflight/SKILL.md")
+        out = self.update()
+        self.assert_session_not_wired()
+        self.assertIn("session handoff", out)
+        self.assertIn("skills/sync", out)
+
+    def test_install_with_own_preflight_does_not_wire_session(self):
+        (self.skills / "preflight").mkdir(parents=True)
+        (self.skills / "preflight/SKILL.md").write_text("---\nname: preflight\n---\nmine\n", encoding="utf-8")
+        plan = self.inst.build_plan(self.cfg())
+        plan.execute()
+        self.assertFalse((self.tmp / "tools/session").exists())
+        self.assertFalse((self.skills / "sync").exists())
+        self.assertNotIn(self.inst.SESSION_START, self.claude_md())
+        self.assertTrue(any("skills/preflight" in n and "as a whole" in n for n in plan.notes))
+
+    def test_requesting_only_preflight_next_to_own_sync_skips_both(self):
+        self.own_sync()
+        plan = self.inst.build_plan(self.cfg(extra_skills=["preflight"]))
+        plan.execute()
+        self.assertFalse((self.skills / "preflight").exists())
+        self.assert_session_not_wired()
+        self.assertEqual(sum("session handoff" in n for n in plan.notes), 1)
+
+    def test_force_skills_does_not_override_an_unrequested_own_sync(self):
+        self.own_sync()
+        self.inst.build_plan(self.cfg(extra_skills=["preflight"], force_skills=True)).execute()
+        self.assertFalse((self.skills / "preflight").exists())
+        self.assert_session_not_wired()
+
+    def stale_setup(self, crlf: bool) -> bytes:
+        """An earlier (buggy) install: engine preflight + the session block next to the user's own sync."""
+        self.own_sync()
+        (self.skills / "preflight").mkdir()
+        shutil.copy2(self.inst.ENGINE / "extra-skills/preflight/SKILL.md", self.skills / "preflight/SKILL.md")
+        eol = b"\r\n" if crlf else b"\n"
+        original = eol.join([b"# mine", b"<!-- wiki-engine:start -->", b"w", b"<!-- wiki-engine:end -->", b""])
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_bytes(original)
+        self.inst.inject_block(cmd, "## Session handoff\nuse /sync\n", self.inst.SESSION_START,
+                               self.inst.SESSION_END)
+        self.assertIn(self.inst.SESSION_START.encode(), cmd.read_bytes())
+        return original
+
+    def test_update_with_conflict_removes_stale_session_block(self):
+        for crlf in (False, True):
+            with self.subTest(crlf=crlf):
+                shutil.rmtree(self.skills, ignore_errors=True)
+                original = self.stale_setup(crlf)
+                out = self.update()
+                # expected = the pre-inject bytes plus the (unrelated) wiki-block refresh --update always does
+                expected = self.tmp / "expected.md"
+                expected.write_bytes(original)
+                self.inst.inject_block(expected, (self.inst.ENGINE / "claude-md/ingestion-policy.md")
+                                       .read_text(encoding="utf-8"))
+                self.assertEqual((self.tmp / "CLAUDE.md").read_bytes(), expected.read_bytes())
+                self.assertIn("Removing the engine's session-handoff block", out)
+                self.assertFalse((self.tmp / "tools/session").exists())
+
+    def test_update_with_no_claude_md_keeps_stale_block(self):
+        self.stale_setup(crlf=False)
+        before = (self.tmp / "CLAUDE.md").read_bytes()
+        self.update(claude_md=False)
+        self.assertEqual((self.tmp / "CLAUDE.md").read_bytes(), before)
+
+    def test_update_without_conflict_keeps_session_block(self):
+        self.inst.build_plan(self.cfg()).execute()
+        self.update()
+        self.assertEqual(self.claude_md().count(self.inst.SESSION_START), 1)
+
+    def test_remove_block_is_noop_without_block(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_bytes(b"a\r\nb\r\n")
+        self.inst.remove_block(cmd, self.inst.SESSION_START, self.inst.SESSION_END)
+        self.assertEqual(cmd.read_bytes(), b"a\r\nb\r\n")
+
+    def test_force_skills_replacing_own_sync_does_wire_session(self):
+        self.own_sync()
+        self.inst.build_plan(self.cfg(force_skills=True)).execute()
+        self.assertTrue(self.inst.is_engine_skill(self.skills / "sync"))
+        self.assertTrue((self.tmp / "tools/session/open.py").is_file())
+        self.assertIn(self.inst.SESSION_START, self.claude_md())
+
+    def test_preflight_alone_still_gets_its_tools(self):
+        # an ABSENT sync is not a conflict: /preflight needs tools/session to run at all
+        self.inst.build_plan(self.cfg(extra_skills=["preflight"])).execute()
+        self.assertTrue((self.tmp / "tools/session/open.py").is_file())
+
+    # --- fix 2: --update must not silently overwrite an edited handoff template ---
+
+    def test_update_backs_up_edited_handoff_template(self):
+        self.inst.build_plan(self.cfg()).execute()
+        tmpl = self.tmp / "handoffs/_TEMPLATE.md"
+        engine = (self.inst.ENGINE / "templates/handoffs/_TEMPLATE.md").read_bytes()
+        tmpl.write_bytes(engine + b"\nMY EDIT\n")
+        self.update()
+        self.assertEqual(tmpl.read_bytes(), engine)
+        baks = list((self.tmp / ".wikibak/handoffs").glob("_TEMPLATE.md-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertIn(b"MY EDIT", baks[0].read_bytes())
+
+    def test_update_with_unchanged_templates_makes_no_backup(self):
+        self.inst.build_plan(self.cfg()).execute()
+        self.update()
+        self.assertFalse((self.tmp / ".wikibak/handoffs").exists())
+
+    def test_user_file_is_never_touched_by_update(self):
+        self.inst.build_plan(self.cfg()).execute()
+        (self.tmp / "handoffs/_USER.md").write_text("mine", encoding="utf-8")
+        self.update()
+        self.assertEqual((self.tmp / "handoffs/_USER.md").read_text(encoding="utf-8"), "mine")
+
+    # --- fix 3: --update replaces only engine-owned core skills, backing up edited ones ---
+
+    def test_engine_core_skills_are_tagged(self):
+        for name in self.inst.SKILL_SETS["core"]:
+            self.assertTrue(self.inst.is_engine_skill(self.inst.ENGINE / "skills" / name), name)
+
+    def test_update_skips_users_own_core_skill(self):
+        d = self.skills / "wiki-ingest"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: wiki-ingest\n---\nmy own ingest\n", encoding="utf-8")
+        out = self.update(skills=["wiki-ingest"])
+        self.assertIn("my own ingest", (d / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("skip 'wiki-ingest'", out)
+        self.assertFalse((self.tmp / ".wikibak/skills").exists())
+
+    def test_update_backs_up_edited_engine_core_skill(self):
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[])).execute()
+        md = self.skills / "doc-review/SKILL.md"
+        md.write_text(md.read_text(encoding="utf-8") + "\nMY TWEAK\n", encoding="utf-8")
+        self.update(skills=["doc-review"])
+        self.assertNotIn("MY TWEAK", md.read_text(encoding="utf-8"))
+        baks = list((self.tmp / ".wikibak/skills").glob("doc-review-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertIn("MY TWEAK", (baks[0] / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_update_of_unchanged_core_skill_makes_no_backup(self):
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[])).execute()
+        self.update(skills=["doc-review"])
+        self.assertFalse((self.tmp / ".wikibak/skills").exists())
+
+    def test_update_replaces_legacy_untagged_core_copy(self):
+        # The previous engine version shipped core skills without the tag: exact bytes identify them.
+        for name in self.inst.SKILL_SETS["core"]:
+            src = (self.inst.ENGINE / "skills" / name / "SKILL.md").read_bytes()
+            legacy = src.replace(self.inst.ENGINE_TAG.encode() + b"\n", b"", 1)
+            self.assertNotEqual(legacy, src)
+            self.assertIn(hashlib.sha256(legacy).hexdigest(), self.inst.LEGACY_ENGINE_SKILL_SHA256)
+            d = self.skills / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_bytes(legacy)
+        self.update(skills=self.inst.SKILL_SETS["core"])
+        for name in self.inst.SKILL_SETS["core"]:
+            self.assertTrue(self.inst.is_engine_skill(self.skills / name))
+            self.assertIn(self.inst.ENGINE_TAG, (self.skills / name / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_update_installs_missing_core_skill(self):
+        self.update(skills=["wiki-sync"])
+        self.assertTrue(self.inst.is_engine_skill(self.skills / "wiki-sync"))
 
 
 if __name__ == "__main__":

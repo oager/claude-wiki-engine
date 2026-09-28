@@ -4,6 +4,8 @@ Design: claude-wiki-engine README, "Session handoff" ("Shared projects").
 Only public sections are copied from the vault handoff; the leak guard refuses identity strings.
 """
 import datetime as dt
+import os
+import tempfile
 from pathlib import Path
 
 import leakguard
@@ -32,8 +34,29 @@ def write(root, private_text, author, needles):
     if hits:
         return {"written": False, "refused": hits}
     p = Path(root) / REL
+    # Security: a collaborator can commit .claude or HANDOFF.md as a symlink; following it would let /sync
+    # overwrite any file the user can write (e.g. ~/.bashrc). Refuse, and never write through a link.
+    if p.parent.is_symlink() or p.is_symlink():
+        return {"written": False, "reason": f"{REL} or its folder is a symlink; not written"}
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    real_root = os.path.realpath(root)
+    try:
+        inside = os.path.commonpath([real_root, os.path.realpath(p)]) == real_root
+    except ValueError:  # different drives (Windows)
+        inside = False
+    if not inside:
+        return {"written": False, "reason": f"{REL} resolves outside the repo; not written"}
+    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".HANDOFF.", suffix=".tmp")  # O_EXCL: never a planted file
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, p)  # replaces the name itself; a link swapped in meanwhile is replaced, not followed
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return {"written": True, "path": str(p)}
 
 

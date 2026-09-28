@@ -81,11 +81,17 @@ SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"
 SESSION_EXTRAS = {"preflight", "sync"}  # extras that need tools/session + the handoff templates
 ENGINE_TAG = "source: claude-wiki-engine"
-# preflight/sync SKILL.md as the 701848e installer copied them, before skills carried ENGINE_TAG: an install whose
-# bytes match one of these is an untouched engine copy, so --update may refresh it.
+# SKILL.md files as earlier installers copied them, before skills carried ENGINE_TAG: an install whose bytes match
+# one of these is an untouched engine copy, so --update may refresh it.
 LEGACY_ENGINE_SKILL_SHA256 = {
-    "427cd9b28e171f40db5a08d082d521819bf7ee67b8c92d94a360a6599bd23629",  # extra-skills/preflight/SKILL.md
-    "19cc77f9364d9b4b0ad8d91619277cdf467425fe0e687dfcd96d67710e65f91f",  # extra-skills/sync/SKILL.md
+    "427cd9b28e171f40db5a08d082d521819bf7ee67b8c92d94a360a6599bd23629",  # extra-skills/preflight/SKILL.md @701848e
+    "19cc77f9364d9b4b0ad8d91619277cdf467425fe0e687dfcd96d67710e65f91f",  # extra-skills/sync/SKILL.md @701848e
+    # every committed version of the core skills before they were tagged
+    "fdc52c2bd3027fdd810db0eff27e40963e9d3d05d29b914f1f1e53d75d5ff389",  # skills/wiki-ingest/SKILL.md @26d1faa
+    "619e5674c781551b807b05f4e7787cbad05dc2fcfaf3b9f4c2913a812f791134",  # skills/wiki-ingest/SKILL.md @aed4b19
+    "5d6254cb9517719e88a28f4e4fd56a214ad673107458ab8034192046db4cdbc6",  # skills/doc-review/SKILL.md @26d1faa
+    "3d317ea8ef76bbd57f5315be8ec307d5bdf47472c34e7b60d03defa3be3a1fa9",  # skills/doc-review/SKILL.md @aed4b19
+    "fcaadce02a21f6c803667f34ab8e1c56be4134991cdddf993515743b571315ff",  # skills/wiki-sync/SKILL.md @377a75a
 }
 SESSION_START = "<!-- session-handoff:start -->"
 SESSION_END = "<!-- session-handoff:end -->"
@@ -254,6 +260,32 @@ def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: 
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
 
 
+def has_block(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END) -> bool:
+    target = claude_md.resolve()
+    if not target.is_file():
+        return False
+    try:
+        text, _ = read_text_keep_eol(target)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return start in text and end in text
+
+
+def remove_block(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END):
+    """Remove a sentinel-bounded block (inverse of inject_block, CRLF-safe); no-op when it is absent."""
+    if not has_block(claude_md, start, end):
+        return
+    target = claude_md.resolve()
+    text, eol = read_text_keep_eol(target)
+    before, rest = text.split(start, 1)
+    after = rest.split(end, 1)[1]
+    if after.startswith("\n"):   # the newline inject_block put after the end marker
+        after = after[1:]
+    if before.endswith("\n\n"):  # the blank line inject_block put before the start marker
+        before = before[:-1]
+    target.write_bytes((before + after).replace("\n", eol).encode("utf-8"))
+
+
 def is_engine_skill(skill_dir: Path) -> bool:
     """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter, or is a
     byte-identical legacy copy (LEGACY_ENGINE_SKILL_SHA256). Requires real YAML frontmatter (text starting
@@ -272,6 +304,62 @@ def is_engine_skill(skill_dir: Path) -> bool:
     return ENGINE_TAG in head
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def _same_tree(a: Path, b: Path) -> bool:
+    """True when two dirs hold the same files with the same bytes, so replacing one with the other loses nothing."""
+    try:
+        fa = sorted(p.relative_to(a) for p in a.rglob("*") if p.is_file())
+        fb = sorted(p.relative_to(b) for p in b.rglob("*") if p.is_file())
+        return fa == fb and all(_same_file(a / r, b / r) for r in fa)
+    except OSError:
+        return False
+
+
+def plan_skill_refresh(plan: Plan, base: Path, name: str, src: Path, dst: Path, label: str, reinstall: str):
+    """--update for one present skill: replace it only when it is an engine copy (ENGINE_TAG or a legacy hash),
+    backing it up to <config>/.wikibak/ first when it differs from the engine's. A symlinked install already
+    tracks the engine; anything else is the user's own (or a plugin's) and is left alone."""
+    if dst.is_symlink():
+        plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
+    elif is_engine_skill(dst):
+        plan.add("copy", f"{src.parent.name}/{name} -> {dst}",
+                 lambda s=src, d=dst, b=base: (None if _same_tree(s, d) else _versioned_backup(b, d),
+                                               copy_tree(s, d)))
+    else:
+        plan.note(f"skip {label}'{name}' (not tagged as an engine copy; move the old copy out of "
+                  f"skills/ (rename or delete it), then run: {reinstall})")
+
+
+def session_conflicts(skills_real: Path, installing: set[str]) -> list[str]:
+    """preflight/sync skills that will be the USER's own after this run: present, not an engine copy, and not
+    being replaced by one. The session block tells the model to use /preflight and /sync, so wiring it next to a
+    same-named skill of the user's would point it at their unrelated workflow."""
+    return sorted(n for n in SESSION_EXTRAS
+                  if n not in installing and ((skills_real / n).exists() or (skills_real / n).is_symlink())
+                  and not is_engine_skill(skills_real / n))
+
+
+def session_conflict_note(conflicts: list[str], update: bool = False, removed_block: bool = False) -> str:
+    """One note for a preflight/sync conflict. An install skips the session system as a whole (both engine
+    session skills, tools/session, the CLAUDE.md block): /preflight and /sync only work as a set."""
+    names = " and ".join(f"skills/{n}" for n in conflicts)
+    verb = "is your own skill" if len(conflicts) == 1 else "are your own skills"
+    what = ("tools/session + CLAUDE.md block" if update
+            else "engine preflight + sync skills, tools/session, CLAUDE.md block")
+    note = (f"skip the session handoff system as a whole ({what}): {names} {verb}, not the engine's, and the "
+            f"engine's /preflight and /sync only work together with their tools and block, which would send "
+            f"/{conflicts[0]} to yours.")
+    if removed_block:
+        note += " Removing the engine's session-handoff block from CLAUDE.md (left by an earlier install)."
+    return note + " To use it, rename or remove yours, then run: install.py --extras preflight,sync"
+
+
 def home_claude() -> Path:
     """Where the session skills look for their tools: they call ~/.claude/tools/session by that path."""
     return Path.home() / ".claude"
@@ -280,8 +368,12 @@ def home_claude() -> Path:
 def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     """What /preflight and /sync need besides SKILL.md: tools/session, handoff templates, _USER.md, a CLAUDE.md block."""
     if base.resolve() != home_claude().resolve():
-        plan.note(f"the session skills call ~/.claude/tools/session - set CLAUDE_VAULT to {base} "
-                  "for them to use this install")
+        # The skills hard-code the tool path; lib.vault() reads CLAUDE_VAULT (default ~/.claude) for handoffs only.
+        plan.note(f"the session skills run python3 ~/.claude/tools/session/... by that fixed path, so for this "
+                  f"install they work only after you edit that path (also written $HOME/.claude/tools/session) "
+                  f"to {base / 'tools' / 'session'} in skills/preflight and skills/sync; the tools keep handoffs "
+                  f"in ~/.claude/handoffs unless CLAUDE_VAULT is set (set it to {base} in the environment Claude "
+                  "Code runs in - it moves the vault only, not the tool path)")
     src_tools, dst_tools = ENGINE / "extra-tools" / "session", base / "tools" / "session"
     if dst_tools.exists() and not (dst_tools / ".engine").exists():
         plan.note("skip tools/session (present and not from the engine - not overwriting)")
@@ -294,8 +386,12 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     hand = base / "handoffs"
     for name in ("_TEMPLATE.md", "_USER.template.md"):
         s, d = ENGINE / "templates" / "handoffs" / name, hand / name
-        plan.add("copy", f"templates/handoffs/{name} -> {hand}",
-                 lambda s=s, d=d: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+        if not d.exists():
+            plan.add("seed", f"templates/handoffs/{name} -> {hand}",
+                     lambda s=s, d=d: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
+        elif not _same_file(s, d):  # edited (or an older engine copy): keep the old one under .wikibak/
+            plan.add("copy", f"templates/handoffs/{name} -> {hand} (yours backed up to .wikibak/)",
+                     lambda s=s, d=d, b=base: (_versioned_backup(b, d), shutil.copy2(s, d)))
     user = hand / "_USER.md"
     if user.exists():
         plan.note("keep handoffs/_USER.md (yours)")
@@ -517,7 +613,9 @@ def build_plan(cfg: dict) -> Plan:
         src = ENGINE / "skills" / name
         dst = skills_real / name
         if dst.exists() and not cfg.get("force_skills"):
-            plan.note(f"skip skill '{name}' (already present - not overwriting; --force-skills to replace)")
+            why = ("engine copy present; --update refreshes it" if is_engine_skill(dst)
+                   else "not overwriting; --force-skills to replace")
+            plan.note(f"skip skill '{name}' (already present - {why})")
             continue
         if mode == "symlink":
             plan.add("link", f"{name} -> {dst}",
@@ -527,9 +625,20 @@ def build_plan(cfg: dict) -> Plan:
                      lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
 
     # optional extra skills - same skip-if-exists safety as the core set
-    for name in cfg.get("extra_skills") or []:
+    extras = cfg.get("extra_skills") or []
+    # Session system (preflight + sync + tools/session + CLAUDE.md block) goes in as a whole or not at all: never
+    # next to a /preflight or /sync that will still be the user's own after this plan.
+    session_wanted = SESSION_EXTRAS & set(extras)
+    session_writes = {n for n in session_wanted if (ENGINE / "extra-skills" / n).exists()
+                      and (cfg.get("force_skills") or not (skills_real / n).exists())}
+    conflicts = session_conflicts(skills_real, session_writes) if session_wanted else []
+    if conflicts:
+        plan.note(session_conflict_note(conflicts))
+    for name in extras:
         src = ENGINE / "extra-skills" / name
         dst = skills_real / name
+        if name in SESSION_EXTRAS and conflicts:
+            continue  # covered by the one conflict note above
         if not src.exists():
             plan.note(f"skip extra '{name}' (not in this engine version)")
             continue
@@ -545,7 +654,7 @@ def build_plan(cfg: dict) -> Plan:
             plan.add("copy", f"extra-skills/{name} -> {dst}",
                      lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
 
-    if SESSION_EXTRAS & set(cfg.get("extra_skills") or []):
+    if session_wanted and not conflicts:
         session_plan(plan, base, update=False, claude_md=cfg["claude_md"])
 
     # framework (seed-if-absent)
@@ -610,11 +719,11 @@ def do_update(cfg: dict):
     skills_real = skills_dir.resolve() if skills_dir.is_symlink() else skills_dir
     for name in cfg["skills"]:
         src, dst = ENGINE / "skills" / name, skills_real / name
-        if dst.is_symlink():
-            plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
-            continue
-        plan.add("copy", f"skills/{name} -> {dst}",
-                 lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), copy_tree(s, d)))
+        if dst.exists() or dst.is_symlink():
+            plan_skill_refresh(plan, base, name, src, dst, "", "install.py")
+        else:
+            plan.add("copy", f"skills/{name} -> {dst}",
+                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), copy_tree(s, d)))
     if cfg.get("hooks", True):
         for hf, event, matcher in HOOKS:
             hsrc, hdst = ENGINE / "hooks" / hf, base / "hooks" / hf
@@ -633,18 +742,19 @@ def do_update(cfg: dict):
                  lambda c=cmd, b=block: inject_block(c, b))
     for name in EXTRA_SKILLS:
         src, dst = ENGINE / "extra-skills" / name, skills_real / name
-        if not (dst.exists() and src.exists()):
-            continue
-        if dst.is_symlink():
-            plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
-            continue
-        if is_engine_skill(dst):
-            plan.add("copy", f"extra-skills/{name} -> {dst}",
-                     lambda s=src, d=dst, b=base: (_versioned_backup(b, d), copy_tree(s, d)))
-        else:
-            plan.note(f"skip extra '{name}' (not tagged as an engine copy; move the old copy out of "
-                      f"skills/ (rename or delete it), then run: install.py --extras {name})")
-    if any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS):
+        if dst.exists() and src.exists():
+            plan_skill_refresh(plan, base, name, src, dst, "extra ", f"install.py --extras {name}")
+    # an --update keeps each preflight/sync as it is (engine copies stay engine, the user's stay theirs)
+    engine_session = any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS)
+    conflicts = session_conflicts(skills_real, set())
+    cmd = base / "CLAUDE.md"
+    stale = bool(conflicts) and cfg["claude_md"] and has_block(cmd, SESSION_START, SESSION_END)
+    if conflicts and (engine_session or stale):
+        plan.note(session_conflict_note(conflicts, update=True, removed_block=stale))
+        if stale:  # an earlier install wired the block next to the user's own skill: take it back out
+            plan.add("edit", f"CLAUDE.md (- session-handoff block) -> {cmd.resolve()}",
+                     lambda c=cmd: remove_block(c, SESSION_START, SESSION_END))
+    elif engine_session:
         session_plan(plan, base, update=True, claude_md=cfg["claude_md"])
     print(plan.render())
     if cfg["dry_run"]:

@@ -56,10 +56,10 @@ Standing notes. Leave the legacy file where it is.
 | Last session | Prepend `- **YYYY-MM-DD** — <what happened>`. That exact bullet form is what trim dates. |
 | Frontmatter | `updated` (UTC `YYYY-MM-DDTHH:MMZ`), `updated_by` (hostname), `repo_sha` + `vault_sha` from Step 0, `type`. |
 
-Verify the Profile still parses (must print `None`):
+Verify the Profile still parses (must print `"profile_error": null`):
 
 ```bash
-python3 -c "import sys; sys.path.insert(0,'$HOME/.claude/tools/session'); import lib; print(lib.parse_handoff(open('<handoff.path>').read())['profile_error'])"
+python3 ~/.claude/tools/session/close.py check-profile <handoff.path>
 ```
 
 ### Step 1a — Trim
@@ -79,7 +79,9 @@ move the triaged notes and add every path the command prints under `stage` to th
 ```bash
 python3 ~/.claude/tools/session/close.py inbox-done --files <note paths…>
 ```
-Notes listed under `already_done` were triaged by another session: nothing to do.
+Notes listed under `already_done` were triaged by another session: nothing to do. Paths under `refused` are not
+inbox notes (a folder, a `done/` entry, a symlink, a non-`.md` file, or a path outside `handoffs/inbox/<key>/`) and
+were not moved: fix the list.
 Notes left untouched stay and appear under Warnings.
 
 ### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
@@ -92,7 +94,9 @@ result carries `uncommitted` and `ignored`, which Warnings reports (see Step 1).
 this handoff, so collaborators leave notes in a PR or issue, not in the file. `refused` non-empty → the leak guard
 found personal strings; fix the private handoff's public sections (Next up, Current state, Warnings, Open items) and
 re-run. `refused` empty with a `reason` → `_USER.md` has no identity strings to guard with; nothing is written until
-it does (propose filling it in Step 1d). Never commit a refused file by hand.
+it does (propose filling it in Step 1d). `written: false` with a `reason` naming a symlink or "outside the repo" →
+`.claude` or `HANDOFF.md` in the repo is a symlink (possibly committed by a collaborator); nothing was written.
+Report it; never replace the link by hand. Never commit a refused file by hand.
 
 ### Step 1d — User handoff proposals (`handoffs/_USER.md`)
 
@@ -180,8 +184,12 @@ If nothing new is promote-worthy, just log nothing and move on.
 
 ```bash
 python3 ~/.claude/tools/session/close.py push --message "sync: <key> session <YYYY-MM-DD>" \
-  --files <handoff.path> [<key>.archive.md] <every memory / wiki file THIS session changed>
+  --files <handoff.path> [<archive path>] <every memory / wiki file THIS session changed>
 ```
+
+`<archive path>` = the archive file's full path, next to the handoff (`<handoffs dir>/<key>.archive.md`, i.e. Step 1a's
+`archive` value), listed only if trim created or changed it. Never a bare name: relative paths resolve against the
+current folder and fail the all-or-nothing push.
 
 It takes the `.sync.lock` mutex (stale after 5 min), stages **only** the listed files with `add -f` (new files under
 `projects/*/memory/` are silently skipped without `-f`), makes a pathspec commit so other sessions' staged work stays
@@ -192,7 +200,7 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 | `ok` | Report `sha`. If `missing` is non-empty, re-run push with those files. |
 | `nothing` | Report "nothing to commit" (nothing staged and nothing left unpushed). |
 | `locked` | Another session is syncing: retry once a minute later, else report the push as deferred. |
-| `stage_failed` | No listed file exists or is tracked, or a listed path is a directory (list files, never folders): fix the list and re-run. Nothing was staged. |
+| `stage_failed` | No listed file exists or is tracked, a listed path is a directory (list files, never folders), a listed file is ignored or secret-shaped (`.credentials.json`, `.env*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`; `add -f` is only for new `projects/*/memory/` files), or a listed file is not stageable (e.g. inside a nested repository): `detail` names the path. Fix the list and re-run. Nothing was staged. |
 | `dropped` non-empty (on any status) | These listed paths don't exist and were never committed, so they were skipped. Harmless only for an archive file `trim` never created; anything else means the file list is wrong — fix it and re-run push. |
 | `local` | The vault is not a git repo: the files are written locally and there is nothing to push. Report "vault: local". |
 | `committed_local` | No upstream to push to: committed locally, nothing pushed. Report `sha` — see `reason` for why (no remote / no upstream tracking / detached HEAD) and what to do. If `missing` is non-empty, re-run push with those files. |

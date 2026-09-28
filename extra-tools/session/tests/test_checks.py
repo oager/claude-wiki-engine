@@ -42,8 +42,8 @@ UNITS = ("alpha-beta-bot.service loaded active running Task\n"
 def test_guessed_services(fake, tmp_path):
     fake.on(["systemctl", "--user", "list-units"], 0, UNITS)
     fake.on(["systemctl", "list-units"], 0, "")
-    fake.on(["systemctl", "--user", "is-active", "alpha-beta-bot"], 0, "active\n")
-    fake.on(["systemctl", "--user", "is-active", "alpha-beta-watchdog"], 3, "inactive\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "alpha-beta-bot"], 0, "active\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "alpha-beta-watchdog"], 3, "inactive\n")
     root = tmp_path / "alpha_beta_bot_v2_daily"
     root.mkdir()
     checks = [c for c in op.run_checks("trading-bot", root, {}, {}) if c["kind"] == "service"]
@@ -65,8 +65,8 @@ def test_no_guessing_for_workspace(fake, tmp_path):
 
 
 def test_profile_checks(fake, tmp_path):
-    fake.on(["systemctl", "--user", "is-active", "webapp-dashboard"], 0, "active\n")
-    fake.on(["systemctl", "--user", "is-active", "broken"], 3, "failed\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "webapp-dashboard"], 0, "active\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "broken"], 3, "failed\n")
     fake.on(["curl"], 0, '{"ok":true,"boot":"x"}')
     fake.on(["ss"], 0, 'LISTEN 0 50 *:4002 *:* users:(("java",pid=1,fd=2))\n')
     (tmp_path / "logs").mkdir()
@@ -100,8 +100,8 @@ def test_remote_host_uses_ssh(fake, monkeypatch):
     [c] = op.run_checks("workspace", "/nonexistent",
                         {"services": [{"unit": "webapp-dashboard", "host": "hosta"}]}, ids)
     assert c["status"] == "ok"
-    assert fake.calls[-1][:6] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "ubuntu"]
-    assert fake.calls[-1][6] == "systemctl --user is-active webapp-dashboard"
+    assert fake.calls[-1][:7] == ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "--", "ubuntu"]
+    assert fake.calls[-1][7] == "systemctl --user is-active -- webapp-dashboard"
 
 
 def test_freshness_default_for_trading(fake, tmp_path):

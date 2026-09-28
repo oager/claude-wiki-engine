@@ -59,8 +59,8 @@ def test_running_work_unsupported(tmp_path):
 def test_deploy_drift(repo, fake):
     last = int(subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%ct"],
                               capture_output=True, text=True, encoding="utf-8").stdout)
-    fake.on(["systemctl", "--user", "show", "old-svc"], 0, f"ActiveEnterTimestamp=@{last - 100}\n")
-    fake.on(["systemctl", "--user", "show", "new-svc"], 0, f"ActiveEnterTimestamp=@{last + 100}\n")
+    fake.on(["systemctl", "--user", "show", "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--", "old-svc"], 0, f"ActiveEnterTimestamp=@{last - 100}\n")
+    fake.on(["systemctl", "--user", "show", "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--", "new-svc"], 0, f"ActiveEnterTimestamp=@{last + 100}\n")
     prof = {"services": [{"unit": "old-svc", "deploys_from_repo": True},
                          {"unit": "new-svc", "deploys_from_repo": True},
                          {"unit": "plain"}]}

@@ -52,6 +52,39 @@ Last updated: 2026-09-28
 - `push` refuses directories (2026-09-28, security): any listed path that is a directory (or `.` / empty
   string) stages nothing, all-or-nothing — a directory, especially the vault root, would otherwise silently
   commit ignored files (`.credentials.json`, `projects/**`) and other sessions' half-writes.
+- `push` refuses ignored and secret-shaped files (2026-09-28, security): `add -f` force-adds any listed file, so an
+  explicitly listed `.credentials.json` or `.env` would be committed. Before staging, a file whose name is
+  secret-shaped (`.credentials.json`, `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`) is refused
+  whatever its ignore state, and a file `git check-ignore --no-index` calls ignored is refused unless it is under
+  `projects/<x>/memory/` (the only place `-f` is meant for). All-or-nothing, `stage_failed` naming the path.
+  check-ignore runs without `--literal-pathspecs` (it rejects that flag with rc 128; it takes plain pathnames, no
+  glob magic); an rc other than 0/1 refuses too.
+- `push` verifies the index after `add` (2026-09-28): a file inside a nested repository is silently not staged
+  (`add` exits 0). Every existing listed file must be in the index, else `stage_failed` naming it, and what this
+  call staged is unstaged again (`restore --staged`), so `/sync` never loops on `missing`.
+- Stale lock (`.sync.lock`, > 300 s): broken by renaming it to `.sync.lock.stale-<pid>-<nonce>` and checking the
+  renamed dir's inode + mtime still match the lock judged stale; if not (another waiter already replaced it with a
+  fresh lock), it is renamed back and the wait goes on. rmdir-by-name let a second waiter delete the first one's
+  fresh lock.
+- Vault state (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`) is located with `git rev-parse --git-path`, so a
+  worktree or `.git`-file vault is checked; if git fails, `<vault>/.git/<name>` as before.
+
+## 4b. Profile entries and the repo handoff
+- A malformed Profile entry (`{"health": [{"URL": ...}]}`, `{"services": ["unit"]}`, a section that is not a list)
+  is one check with status `unknown` and detail `bad check: <reason>` in `/preflight`; `/sync`'s `drift` lists it
+  with `drift: null` and the same detail. Same rule as the `_USER.md` checks.
+- A Profile value that becomes a command argument (ssh target, systemd unit, health URL) and starts with `-` is
+  refused the same way (`-oProxyCommand=...` would run a command); `--` also precedes the positional argument for
+  ssh, systemctl and curl.
+- `repo-handoff` refuses (`written: false`, `reason`) when `<repo>/.claude` or `HANDOFF.md` is a symlink or the file
+  resolves outside the repo (a committed symlink would let `/sync` overwrite e.g. `~/.bashrc`); it writes through a
+  temp file in the same folder + `os.replace`.
+- `inbox-done` moves only regular `.md` files directly in `handoffs/inbox/<key>/`; anything else is listed under
+  `refused` and the rest still move.
+- Leak guard: needles and text are compared after NFKC + casefold with zero-width characters removed; the whole text
+  is also scanned with whitespace collapsed (a name wrapped across lines); the home directory path is always a
+  needle (in `find`, not `needles`, so an empty identity still refuses). The bare user name is not a needle (too
+  many false positives).
 
 ## 5. Text encoding
 - Handling: every text read/write and text-mode subprocess names `encoding="utf-8"`. Windows defaults to cp1252,

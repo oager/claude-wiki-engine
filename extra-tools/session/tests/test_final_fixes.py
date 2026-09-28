@@ -79,7 +79,8 @@ def test_repo_handoff_cli_refuses_without_identity(vault, repo, capsys):
 def test_inbox_done_cli_shape(vault, capsys):
     p = inbox.write_note("k", "s", "one", "b")
     cl.main(["inbox-done", "--files", str(p)])
-    assert _out(capsys) == {"moved": 1, "stage": [str(p), str(p.parent / "done" / p.name)], "already_done": []}
+    assert _out(capsys) == {"moved": 1, "stage": [str(p), str(p.parent / "done" / p.name)], "refused": [],
+                            "already_done": []}
 
 
 def test_note_stdin_is_read_as_utf8(vault, pushable, monkeypatch, capsys):  # noqa: F811
@@ -132,8 +133,8 @@ def test_collect_survives_checks_not_a_list(vault, repo, fake):
 
 
 def test_user_service_check(vault, fake):
-    fake.on(["systemctl", "--user", "is-active", "good"], 0, "active\n")
-    fake.on(["systemctl", "--user", "is-active", "bad"], 3, "failed\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "good"], 0, "active\n")
+    fake.on(["systemctl", "--user", "is-active", "--", "bad"], 3, "failed\n")
     good, bad = op.user_checks({"checks": [{"kind": "service", "unit": "good"},
                                            {"kind": "service", "unit": "bad"}]}, NOBODY)
     assert (good["source"], good["status"], good["loud"]) == ("user", "ok", False)
@@ -141,7 +142,7 @@ def test_user_service_check(vault, fake):
 
 
 def test_user_health_check(vault, fake):
-    fake.on(["curl", "-s", "-m", "5", "http://localhost:1/ok"], 0, '{"ok": true}')
+    fake.on(["curl", "-s", "-m", "5", "--", "http://localhost:1/ok"], 0, '{"ok": true}')
     ok, down = op.user_checks({"checks": [{"kind": "health", "url": "http://localhost:1/ok", "expect": "ok"},
                                           {"kind": "health", "url": "http://localhost:1/down"}]}, NOBODY)
     assert (ok["source"], ok["status"], ok["loud"]) == ("user", "ok", False)
@@ -262,8 +263,9 @@ def test_mark_done_refuses_paths_outside_inbox(vault):
     stray = vault / "handoffs/alice-demo-proj.md"
     stray.parent.mkdir(parents=True, exist_ok=True)
     stray.write_text("x", encoding="utf-8")
-    with pytest.raises(ValueError):
-        inbox.mark_done([str(stray)])
+    refused = []
+    assert inbox.mark_done([str(stray)], refused) == []
+    assert refused == [str(stray)]
     assert stray.is_file()
 
 
