@@ -304,15 +304,33 @@ def _claim(lock, token):
     lock in over our still-empty dir (Linux rename replaces an EMPTY directory): then it is not ours."""
     try:
         fd = os.open(lock / OWNER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False  # someone else's lock now sits at the path: never touch it
     except OSError:
+        _drop_empty(lock)  # our own dir, still empty: don't leave it to block everyone for 300 s
         return False
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token)
+    except OSError:
+        try:
+            (lock / OWNER).unlink()
+        except OSError:
+            pass
+        _drop_empty(lock)
+        return False
     try:
         (lock / LOCK_IGNORE).write_text("*\n", encoding="utf-8")
     except OSError:
         pass  # cosmetic: the lock still works, it just shows as untracked
     return True
+
+
+def _drop_empty(lock):
+    try:
+        lock.rmdir()  # only succeeds on an empty dir, so it can never remove a claimed lock
+    except OSError:
+        pass
 
 
 def _held(lock, token):
@@ -461,7 +479,7 @@ def push(files, message, retries=15):
         if bad:
             return done("stage_failed", detail="ignored or secret-shaped files are not accepted: " + ", ".join(bad))
         if not _held(lock, token):  # a stale-breaker moved our fresh lock aside and a third waiter took the path
-            return {"status": "locked"}
+            return done("locked")
         rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])

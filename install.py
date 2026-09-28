@@ -151,6 +151,11 @@ def describe(label: str, info: dict) -> str:
 
 # ------------------------- plan (one path for dry-run + execute) -------------------------
 
+class Skipped(str):
+    """Returned by a plan step that deliberately did nothing (to protect the user's data); the message says why.
+    Plan.execute prints it as a warning instead of "[ok]"."""
+
+
 class Plan:
     """Collects actions; renders them for review, then executes the SAME list."""
 
@@ -179,16 +184,23 @@ class Plan:
             if self.dry_run:
                 print(f"  [dry-run] {verb} {detail}")
                 continue
-            fn()
-            print(f"  [ok] {verb} {detail}")
+            res = fn()
+            if isinstance(res, Skipped):
+                print(f"  [warn] {res}")
+            else:
+                print(f"  [ok] {verb} {detail}")
 
 
 # ------------------------- filesystem actions -------------------------
 
+_RUNTIME_DIRS = {"__pycache__", ".pytest_cache"}  # written by running the code, never engine or user content
+
+
 def copy_tree(src: Path, dst: Path):
+    """Replace dst with a copy of src, minus runtime caches (bytecode/pytest caches from the engine checkout)."""
     if dst.exists():
         shutil.rmtree(dst)
-    shutil.copytree(src, dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*_RUNTIME_DIRS))
 
 
 def link_or_copy(src: Path, dst: Path) -> str:
@@ -221,13 +233,17 @@ def _backup(path: Path):
         pass
 
 
-def _versioned_backup(config_base: Path, path: Path):
+def _versioned_backup(config_base: Path, path: Path) -> bool:
     """Timestamped backup OUTSIDE `skills/` -- unlike `_backup`'s single `.wikibak`, this keeps
     every prior version (so a later update doesn't silently overwrite the only backup) and never
     lands under `skills/` (a `<name>.wikibak/` dir there could be picked up as a duplicate skill).
-    Copies into `<config_base>/.wikibak/<relative path>-<UTC timestamp>`; best-effort, never raises."""
-    if not path.exists() or path.is_symlink():
-        return
+    Copies into `<config_base>/.wikibak/<relative path>-<UTC timestamp>`. Never raises: returns True when
+    the backup was made (or there is nothing to back up), False when it failed or `path` is a symlink --
+    callers must then NOT replace `path`."""
+    if not path.exists() and not path.is_symlink():
+        return True
+    if path.is_symlink():
+        return False
     try:
         rel = path.relative_to(config_base)
     except ValueError:
@@ -244,8 +260,18 @@ def _versioned_backup(config_base: Path, path: Path):
             shutil.copytree(path, dest)
         else:
             shutil.copy2(path, dest)
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _replace_backed_up(config_base: Path, dst: Path, same, replace):
+    """Run `replace()` -- but when dst holds something other than the engine copy (`same()` is False), only
+    after `_versioned_backup` succeeded. A failed backup leaves dst untouched and returns a Skipped."""
+    if (dst.exists() or dst.is_symlink()) and not same() and not _versioned_backup(config_base, dst):
+        return Skipped(f"backup failed for {dst} - left it unchanged, not replaced "
+                       f"(check that {config_base / '.wikibak'} is a writable directory)")
+    replace()
 
 
 def read_text_keep_eol(path: Path) -> tuple[str, str]:
@@ -258,18 +284,22 @@ def read_text_keep_eol(path: Path) -> tuple[str, str]:
 
 
 def block_span(text: str, start: str, end: str) -> tuple[int, int] | None | bool:
-    """(start index, index just past the end marker) of the first well-formed block; None when neither marker is
-    present; False when the markers are unpaired or out of order (end before start), which no edit may touch."""
-    i = text.find(start)
-    j = text.find(end, i + len(start)) if i >= 0 else -1
-    if i >= 0 and j >= 0:
-        return i, j + len(end)
-    return None if (i < 0 and end not in text) else False
+    """(start index, index just past the end marker) of the block; None when neither marker is present; False
+    ("broken") unless there is exactly one start and exactly one end marker, end after start. A duplicated
+    marker (prose mention, merge leftover, a second block) makes the span ambiguous: any edit could delete user
+    text between two markers, so a broken block is never edited."""
+    ns, ne = text.count(start), text.count(end)
+    if ns == 0 and ne == 0:
+        return None
+    i, j = text.find(start), text.find(end)
+    if ns != 1 or ne != 1 or j < i + len(start):
+        return False
+    return i, j + len(end)
 
 
-def _markers_broken(target: Path, start: str) -> None:
-    print(f"  [warn] {target}: the {start} block markers are unpaired or out of order - left unchanged; "
-          "fix them by hand and re-run")
+def _markers_broken(target: Path, start: str) -> Skipped:
+    return Skipped(f"{target}: the {start} block markers are unpaired, duplicated or out of order - left "
+                   "unchanged; fix them by hand and re-run")
 
 
 def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: str = SENTINEL_END):
@@ -290,6 +320,16 @@ def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: 
         target.parent.mkdir(parents=True, exist_ok=True)
         new, eol = managed + "\n", "\n"
     target.write_bytes(new.replace("\n", eol).encode("utf-8"))
+
+
+def plan_block_edit(plan: Plan, detail: str, claude_md: Path, block: str, start: str = SENTINEL_START,
+                    end: str = SENTINEL_END):
+    """Plan an inject_block edit, or -- when the file's markers are already broken -- a note instead of a step
+    (inject_block would refuse anyway; it re-checks at execute time in case the file changed meanwhile)."""
+    if block_state(claude_md, start, end) == "broken":
+        plan.note(_markers_broken(claude_md.resolve(), start).replace(": the ", ": CLAUDE.md - the ", 1))
+        return
+    plan.add("edit", detail, lambda c=claude_md, b=block, s=start, e=end: inject_block(c, b, s, e))
 
 
 def block_state(claude_md: Path, start: str = SENTINEL_START, end: str = SENTINEL_END) -> str:
@@ -315,7 +355,7 @@ def remove_block(claude_md: Path, start: str = SENTINEL_START, end: str = SENTIN
     if span is False:
         return _markers_broken(target, start)
     if span is None:
-        return
+        return None
     before, after = text[:span[0]], text[span[1]:]
     if after.startswith("\n"):   # the newline inject_block put after the end marker
         after = after[1:]
@@ -349,9 +389,6 @@ def _same_file(a: Path, b: Path) -> bool:
         return False
 
 
-_RUNTIME_DIRS = {"__pycache__", ".pytest_cache"}  # written by running the code, never a user change
-
-
 def _tree_files(root: Path) -> list[Path]:
     return sorted(p.relative_to(root) for p in root.rglob("*")
                   if p.is_file() and not _RUNTIME_DIRS & set(p.relative_to(root).parts))
@@ -373,9 +410,10 @@ def plan_skill_refresh(plan: Plan, base: Path, name: str, src: Path, dst: Path, 
     if dst.is_symlink():
         plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
     elif is_engine_skill(dst):
-        plan.add("copy", f"{src.parent.name}/{name} -> {dst}",
-                 lambda s=src, d=dst, b=base: (None if _same_tree(s, d) else _versioned_backup(b, d),
-                                               copy_tree(s, d)))
+        backed = "" if _same_tree(src, dst) else " (yours backed up to .wikibak/ first)"
+        plan.add("copy", f"{src.parent.name}/{name} -> {dst}{backed}",
+                 lambda s=src, d=dst, b=base: _replace_backed_up(b, d, lambda: _same_tree(s, d),
+                                                                 lambda: copy_tree(s, d)))
     else:
         plan.note(f"skip {label}'{name}' (not tagged as an engine copy; move the old copy out of "
                   f"skills/ (rename or delete it), then run: {reinstall})")
@@ -425,10 +463,12 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     elif dst_tools.exists() and not update:
         plan.note("keep tools/session (engine copy present; --update refreshes it)")
     else:
-        plan.add("copy", f"extra-tools/session -> {dst_tools}",
-                 lambda s=src_tools, d=dst_tools, b=base: (
-                     d.parent.mkdir(parents=True, exist_ok=True),
-                     None if not d.exists() or _same_tree(s, d) else _versioned_backup(b, d), copy_tree(s, d)))
+        backed = ("" if not dst_tools.exists() or _same_tree(src_tools, dst_tools)
+                  else " (yours backed up to .wikibak/ first)")
+        plan.add("copy", f"extra-tools/session -> {dst_tools}{backed}",
+                 lambda s=src_tools, d=dst_tools, b=base: _replace_backed_up(
+                     b, d, lambda: _same_tree(s, d),
+                     lambda: (d.parent.mkdir(parents=True, exist_ok=True), copy_tree(s, d))))
     hand = base / "handoffs"
     for name in ("_TEMPLATE.md", "_USER.template.md"):
         s, d = ENGINE / "templates" / "handoffs" / name, hand / name
@@ -437,7 +477,8 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
                      lambda s=s, d=d: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
         elif not _same_file(s, d):  # edited (or an older engine copy): keep the old one under .wikibak/
             plan.add("copy", f"templates/handoffs/{name} -> {hand} (yours backed up to .wikibak/)",
-                     lambda s=s, d=d, b=base: (_versioned_backup(b, d), shutil.copy2(s, d)))
+                     lambda s=s, d=d, b=base: _replace_backed_up(b, d, lambda: _same_file(s, d),
+                                                                 lambda: shutil.copy2(s, d)))
     user = hand / "_USER.md"
     if user.exists():
         plan.note("keep handoffs/_USER.md (yours)")
@@ -448,8 +489,8 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     if claude_md:
         block = (ENGINE / "claude-md" / "session-handoff.md").read_text(encoding="utf-8")
         cmd = base / "CLAUDE.md"
-        plan.add("edit", f"CLAUDE.md (+ session-handoff block) -> {cmd}",
-                 lambda c=cmd, b=block: inject_block(c, b, SESSION_START, SESSION_END))
+        plan_block_edit(plan, f"CLAUDE.md (+ session-handoff block) -> {cmd}", cmd, block,
+                        SESSION_START, SESSION_END)
 
 
 _SNAPSHOTTED: set[str] = set()  # files backed up THIS run -- snapshot once, before ANY wiring
@@ -746,8 +787,8 @@ def build_plan(cfg: dict) -> Plan:
     if cfg["claude_md"]:
         cmd = base / "CLAUDE.md"
         block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
-        plan.add("edit", f"CLAUDE.md (+ sentinel block) -> {cmd.resolve() if cmd.exists() else cmd}",
-                 lambda c=cmd, b=block: inject_block(c, b))
+        plan_block_edit(plan, f"CLAUDE.md (+ sentinel block) -> {cmd.resolve() if cmd.exists() else cmd}",
+                        cmd, block)
 
     # version stamp
     stamp = mem_real / ".wiki-engine-version"
@@ -784,8 +825,8 @@ def do_update(cfg: dict):
     if cfg["claude_md"]:
         cmd = base / "CLAUDE.md"
         block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
-        plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
-                 lambda c=cmd, b=block: inject_block(c, b))
+        plan_block_edit(plan, f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
+                        cmd, block)
     # An --update never changes who owns preflight/sync. While either is the user's own, the engine's session
     # skills are left exactly as they are: a refresh could turn a working older /preflight (which needed no
     # tools) into one that calls tools/session, which the conflict path withholds.

@@ -416,11 +416,51 @@ class ReviewFixesTest(unittest.TestCase):
     def assert_left_alone(self, fn, data: bytes):
         cmd = self.tmp / "CLAUDE.md"
         cmd.write_bytes(data)
+        res = fn(cmd)  # must not raise
+        self.assertEqual(cmd.read_bytes(), data)
+        self.assertIsInstance(res, self.inst.Skipped)  # Plan.execute prints it instead of "[ok]"
+        self.assertIn("left unchanged", res)
+
+    def stray_start(self) -> bytes:
+        # a prose mention / merge leftover of the start marker, user text, then the real block
+        s, e = self.inst.SESSION_START, self.inst.SESSION_END
+        return f"top\nsee {s} below\nUSER TEXT\n{s}\nold\n{e}\n".encode()
+
+    def test_remove_block_leaves_extra_start_marker_alone(self):
+        self.assert_left_alone(lambda c: self.inst.remove_block(c, self.inst.SESSION_START,
+                                                                 self.inst.SESSION_END), self.stray_start())
+
+    def test_inject_block_leaves_extra_start_marker_alone(self):
+        self.assert_left_alone(lambda c: self.inst.inject_block(c, "new", self.inst.SESSION_START,
+                                                                 self.inst.SESSION_END), self.stray_start())
+
+    def test_inject_block_leaves_two_blocks_alone(self):
+        s, e = self.inst.SESSION_START, self.inst.SESSION_END
+        data = f"{s}\na\n{e}\nUSER TEXT\n{s}\nb\n{e}\n".encode()
+        self.assert_left_alone(lambda c: self.inst.inject_block(c, "new", s, e), data)
+
+    def test_broken_wiki_markers_plan_no_edit_step(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_text(f"x\n{self.inst.SENTINEL_END}\nmine\n{self.inst.SENTINEL_START}\n", encoding="utf-8")
+        before = cmd.read_bytes()
+        plan = self.inst.build_plan(self.cfg(extra_skills=[]))
+        self.assertFalse(any("CLAUDE.md" in detail for _, detail, _ in plan.steps))
+        self.assertTrue(any("left unchanged" in n and "CLAUDE.md" in n for n in plan.notes))
+        out = self.update()
+        self.assertNotIn("block refresh", out)
+        self.assertIn("left unchanged", out)
+        self.assertEqual(cmd.read_bytes(), before)
+
+    def test_markers_broken_after_planning_print_warn_not_ok(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_text("x\n", encoding="utf-8")
+        plan = self.inst.build_plan(self.cfg(extra_skills=[]))
+        cmd.write_text(f"x\n{self.inst.SENTINEL_END}\n", encoding="utf-8")  # broken between plan and execute
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            fn(cmd)  # must not raise
-        self.assertEqual(cmd.read_bytes(), data)
-        self.assertIn("left unchanged", out.getvalue())
+            plan.execute()
+        self.assertIn("[warn]", out.getvalue())
+        self.assertNotIn("[ok] edit CLAUDE.md", out.getvalue())
 
     def test_remove_block_leaves_misordered_markers_alone(self):
         for crlf in (False, True):
@@ -571,8 +611,15 @@ class ReviewFixesTest(unittest.TestCase):
                              (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_bytes(), name)
             self.assertEqual(len(list((self.tmp / ".wikibak/skills").glob(f"{name}-*"))), 1, name)
 
+    def fake_legacy_recap(self) -> bytes:
+        """A synthetic untagged 'older engine recap' whose hash this test registers as a known engine version
+        (historical files are never copied into the tree as fixtures: they predate sanitisation)."""
+        old = b"---\nname: recap\ndescription: an older engine recap\n---\n# Recap\nold generic text\n"
+        self.inst.LEGACY_ENGINE_SKILL_SHA256 = self.inst.LEGACY_ENGINE_SKILL_SHA256 | {hashlib.sha256(old).hexdigest()}
+        return old
+
     def test_update_refreshes_older_committed_recap(self):
-        old = (REPO / "tests/fixtures/legacy-ef4af76-recap-SKILL.md").read_bytes()  # recap as of ef4af76
+        old = self.fake_legacy_recap()
         (self.skills / "recap").mkdir(parents=True)
         (self.skills / "recap/SKILL.md").write_bytes(old)
         self.update()
@@ -583,13 +630,49 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertEqual((baks[0] / "SKILL.md").read_bytes(), old)
 
     def test_update_skips_user_edited_untagged_recap(self):
-        old = (REPO / "tests/fixtures/legacy-ef4af76-recap-SKILL.md").read_bytes() + b"\nmy edit\n"
+        old = self.fake_legacy_recap() + b"\nmy edit\n"
         (self.skills / "recap").mkdir(parents=True)
         (self.skills / "recap/SKILL.md").write_bytes(old)
         out = self.update()
         self.assertEqual((self.skills / "recap/SKILL.md").read_bytes(), old)
         self.assertIn("skip extra 'recap'", out)
         self.assertFalse((self.tmp / ".wikibak/skills").exists())
+
+    def test_copy_tree_skips_runtime_caches_but_keeps_tests(self):
+        src, dst = self.tmp / "src", self.tmp / "dst"
+        for rel in ("a.py", "tests/test_a.py", "__pycache__/a.pyc", "tests/__pycache__/t.pyc",
+                    ".pytest_cache/v/x"):
+            (src / rel).parent.mkdir(parents=True, exist_ok=True)
+            (src / rel).write_text("x", encoding="utf-8")
+        self.inst.copy_tree(src, dst)
+        got = sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*") if p.is_file())
+        self.assertEqual(got, ["a.py", "tests/test_a.py"])
+
+    def test_tools_session_plan_line_says_backed_up(self):
+        self.inst.build_plan(self.cfg()).execute()
+        plan = self.inst.Plan(True)
+        self.inst.session_plan(plan, self.tmp, update=True, claude_md=False)
+        line = [d for _, d, _ in plan.steps if "extra-tools/session" in d][0]
+        self.assertNotIn("backed up", line)
+        (self.tmp / "tools/session/lib.py").write_text("# mine\n", encoding="utf-8")
+        plan = self.inst.Plan(True)
+        self.inst.session_plan(plan, self.tmp, update=True, claude_md=False)
+        line = [d for _, d, _ in plan.steps if "extra-tools/session" in d][0]
+        self.assertIn("backed up", line)
+
+    def test_failed_backup_never_replaces_the_modified_copy(self):
+        self.inst.build_plan(self.cfg(skills=["doc-review"])).execute()
+        edits = {self.skills / "doc-review/SKILL.md": None, self.tmp / "handoffs/_TEMPLATE.md": None,
+                 self.tmp / "tools/session/lib.py": None}
+        for f in edits:
+            f.write_bytes(f.read_bytes() + b"\nMY CHANGE\n")
+            edits[f] = f.read_bytes()
+        (self.tmp / ".wikibak").write_text("a file where the backup dir should be", encoding="utf-8")
+        out = self.update(skills=["doc-review"])
+        for f, data in edits.items():
+            self.assertEqual(f.read_bytes(), data, f)
+        self.assertEqual(out.count("backup failed"), 3, out)
+        self.assertNotIn("[ok] copy skills/doc-review", out)
 
     def test_update_installs_missing_core_skill(self):
         self.update(skills=["wiki-sync"])

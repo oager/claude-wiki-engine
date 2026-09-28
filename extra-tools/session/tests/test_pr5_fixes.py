@@ -482,3 +482,54 @@ def test_check_profile_cli(tmp_path, capsys):
         assert cl.main(["check-profile", str(path)]) == 0
         res = json.loads(capsys.readouterr().out)
         assert list(res) == ["profile_error"] and (res["profile_error"] is None) is ok
+
+
+def test_claim_failure_other_than_exists_removes_our_empty_dir(tmp_path, monkeypatch):
+    lock = tmp_path / ".sync.lock"
+    lock.mkdir()
+
+    def denied(*a, **k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(cl.os, "open", denied)
+    assert cl._claim(lock, "t") is False and not lock.exists()  # never left to block everyone for 300 s
+
+
+def test_claim_write_failure_removes_owner_and_dir(tmp_path, monkeypatch):
+    lock = tmp_path / ".sync.lock"
+    lock.mkdir()
+
+    class Broken:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, _):
+            raise OSError("disk full")
+
+    real_fdopen = cl.os.fdopen
+
+    def fdopen(fd, *a, **k):
+        cl.os.close(fd)
+        return Broken()
+
+    monkeypatch.setattr(cl.os, "fdopen", fdopen)
+    assert cl._claim(lock, "t") is False and not lock.exists()
+    monkeypatch.setattr(cl.os, "fdopen", real_fdopen)
+
+
+def test_claim_leaves_someone_elses_lock_alone(tmp_path):
+    lock = tmp_path / ".sync.lock"
+    lock.mkdir()
+    (lock / cl.OWNER).write_text("other 1", encoding="utf-8")
+    assert cl._claim(lock, "t") is False and (lock / cl.OWNER).read_text(encoding="utf-8") == "other 1"
+
+
+def test_lost_lock_result_keeps_dropped(vault, pushable, monkeypatch):  # noqa: F811
+    (vault / "handoffs").mkdir()
+    (vault / "handoffs/k.md").write_text("hand", encoding="utf-8")
+    monkeypatch.setattr(cl, "_held", lambda lock, token: False)
+    res = cl.push([str(vault / "handoffs/k.md"), str(vault / "handoffs/gone.md")], "m")
+    assert res["status"] == "locked" and res.get("dropped") == ["handoffs/gone.md"]
