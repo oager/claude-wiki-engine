@@ -1,8 +1,10 @@
-# P1 (security, 2026-09-28): push must refuse directories — a directory path (above all the vault root)
+# P1 (security, 2026-09-28): push must refuse directories — a directory path (especially the vault root)
 # would silently commit ignored files (.credentials.json, projects/**) and other sessions' half-writes.
+import os
 import subprocess
 
 import close as cl
+import pytest
 from test_push import pushable  # noqa: F401  (fixture)
 
 
@@ -136,3 +138,74 @@ def test_push_symlink_outside_vault_refused(vault, pushable, tmp_path):  # noqa:
     assert "outside the vault" in res["detail"]
     assert _git(vault, "diff", "--cached", "--name-only") == ""
     assert not (vault / ".sync.lock").exists()
+
+
+# --- round 2 fixes (2026-09-28): core.quotePath breaks the exact-match check for non-ASCII / quote /
+# backslash filenames; add a regression guard for --literal-pathspecs itself. ---
+
+def _commit_new(vault, rel, content="x"):
+    p = vault / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "-C", str(vault), "add", "--", rel], check=True)
+    subprocess.run(["git", "-C", str(vault), "commit", "-qm", f"add {rel}"], check=True)
+
+
+def test_push_moves_tracked_note_with_curly_apostrophe(vault, pushable):  # noqa: F811
+    old_rel, new_rel = "memory/raw/Can’t Stop.md", "memory/archive/Can’t Stop.md"
+    _commit_new(vault, old_rel, "lyrics")
+    (vault / new_rel).parent.mkdir(parents=True, exist_ok=True)
+    (vault / old_rel).replace(vault / new_rel)
+    res = cl.push([str(vault / old_rel), str(vault / new_rel)], "m")
+    assert res["status"] == "ok"
+    assert not res.get("dropped")
+    status = _git(pushable, "log", "-1", "--name-status", "--format=")
+    assert any(line.startswith("R100") for line in status.splitlines()), status
+    assert _git(vault, "ls-files", "--", old_rel) == ""
+    assert _git(vault, "ls-files", "--", new_rel) != ""
+
+
+def test_push_deletes_tracked_note_with_accent_and_emdash(vault, pushable):  # noqa: F811
+    rel = "notes/café—x.md"
+    _commit_new(vault, rel)
+    (vault / rel).unlink()
+    res = cl.push([str(vault / rel)], "m")
+    assert res["status"] == "ok"
+    assert not res.get("dropped")
+    status = _git(pushable, "log", "-1", "--name-status", "--format=")
+    assert status.strip().startswith("D"), status
+    assert _git(vault, "ls-files", "--", rel) == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason='" is not allowed in file names on Windows')
+def test_push_deletes_tracked_note_with_double_quote(vault, pushable):  # noqa: F811
+    rel = 'notes/say "hi".md'
+    _commit_new(vault, rel)
+    (vault / rel).unlink()
+    res = cl.push([str(vault / rel)], "m")
+    assert res["status"] == "ok"
+    assert not res.get("dropped")
+    status = _git(pushable, "log", "-1", "--name-status", "--format=")
+    assert status.strip().startswith("D"), status
+    assert _git(vault, "ls-files", "--", rel) == ""
+
+
+def test_push_without_literal_pathspecs_would_wrongly_refuse_bracket_deletion(vault, pushable):  # noqa: F811
+    """Regression guard for the --literal-pathspecs flag on g(): a tracked file whose OWN name contains
+    pathspec-glob characters ('n[o]tes.md'), once deleted, must still be recognized by ls-files as tracked.
+    Without --literal-pathspecs, `ls-files -- 'n[o]tes.md'` unions the literal match with whatever the
+    bracket-class ALSO glob-matches (here the sibling 'notes.md'), so ls-files returns 2 lines instead of 1;
+    tracked_as_one_file() then (correctly) refuses a 2-line result, but that means the legitimate deletion
+    silently fails (status stage_failed, dropped) instead of committing. Verified by temporarily removing
+    --literal-pathspecs from g() and confirming this exact test goes from 'ok' to 'stage_failed' (2026-09-28)."""
+    bracket, sibling = "n[o]tes.md", "notes.md"
+    _commit_new(vault, bracket, "bracket")
+    _commit_new(vault, sibling, "sibling")
+    (vault / bracket).unlink()
+    res = cl.push([str(vault / bracket)], "m")
+    assert res["status"] == "ok"
+    # ls-files with a raw (non-literal) pathspec would ALSO glob-match the sibling here, so check the
+    # literal filename against the full tracked-file list instead of using `bracket` as a pathspec.
+    tracked = _git(vault, "ls-files").splitlines()
+    assert bracket not in tracked
+    assert sibling in _git(vault, "ls-files")

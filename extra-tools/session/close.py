@@ -326,8 +326,12 @@ def push(files, message, retries=15):
             # A missing path is accepted only when git still tracks it as exactly this one file. A deleted
             # TRACKED DIRECTORY (e.g. a removed handoffs/inbox) would otherwise pass (ls-files matches every
             # file under the prefix) and `add`/`commit` would stage the deletion of everything under it.
-            rc, out, _ = g("ls-files", "--", r)
-            return rc == 0 and out.splitlines() == [r]
+            # -z: plain `ls-files` quotes/escapes names with core.quotePath=true (the default) whenever they
+            # contain non-ASCII, '"', or '\' (e.g. a curly apostrophe), so the printed name never equals the
+            # raw `r` and a legitimate move/delete of such a file was silently dropped. -z prints raw bytes,
+            # NUL-terminated, unquoted.
+            rc, out, _ = g("ls-files", "-z", "--", r)
+            return rc == 0 and out.split("\0") == [r, ""]
 
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
         rel = [r for r in rel if (v / r).exists() or tracked_as_one_file(r)]
