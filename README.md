@@ -109,9 +109,10 @@ auto-update with the repo.
 - **Shared projects:** set `"shared": true` in the project Profile and `/sync` also writes a public
   `.claude/HANDOFF.md` (leak-guarded) for collaborators.
 - **Plain setups work:** no git in `~/.claude`, one machine, no systemd — the extras switch on when present.
-- **Updating:** `python install.py --update` refreshes extras tagged `source: claude-wiki-engine` (backed up as
-  `.wikibak` first). Copies from before this version are untagged: replace them once with
-  `python install.py --force-skills --extras preflight,sync`.
+- **Updating:** `python install.py --update` refreshes extras tagged `source: claude-wiki-engine`, each backed up to
+  a timestamped copy under `<config>/.wikibak/` first (never under `skills/`, so an old backup can't be picked up as
+  a duplicate skill). Copies from before this version are untagged: move the old copy out of `skills/` (rename or
+  delete it), then run `python install.py --extras preflight,sync` (components already present are skipped).
 - **Converting an old `SESSION_RESUME.md`:** the first `/sync` does it. Archive every dated section, carry every rule
   unless shown obsolete, list only verified service names, give ports an `owner`, write Current state from live data,
   and keep Warnings honest.

@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Make console output UTF-8 + crash-proof on legacy codepages (e.g. Windows cp1252).
@@ -193,10 +194,40 @@ def _backup(path: Path):
         pass
 
 
+def _versioned_backup(config_base: Path, path: Path):
+    """Timestamped backup OUTSIDE `skills/` -- unlike `_backup`'s single `.wikibak`, this keeps
+    every prior version (so a later update doesn't silently overwrite the only backup) and never
+    lands under `skills/` (a `<name>.wikibak/` dir there could be picked up as a duplicate skill).
+    Copies into `<config_base>/.wikibak/<relative path>-<UTC timestamp>`; best-effort, never raises."""
+    if not path.exists() or path.is_symlink():
+        return
+    try:
+        rel = path.relative_to(config_base)
+    except ValueError:
+        rel = Path(path.name)
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    dest = config_base / ".wikibak" / f"{rel}-{ts}"
+    n = 1
+    while dest.exists():  # same-second collision -- disambiguate rather than clobber/crash
+        n += 1
+        dest = config_base / ".wikibak" / f"{rel}-{ts}-{n}"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_dir():
+            shutil.copytree(path, dest)
+        else:
+            shutil.copy2(path, dest)
+    except Exception:
+        pass
+
+
 def read_text_keep_eol(path: Path) -> tuple[str, str]:
+    """Decode as UTF-8, detect the file's line ending, and normalize the returned text to LF so
+    callers can edit without EOL bookkeeping. write with `text.replace("\\n", eol)` to restore it."""
     raw = path.read_bytes()
     eol = "\r\n" if b"\r\n" in raw else "\n"
-    return raw.decode("utf-8"), eol
+    text = raw.decode("utf-8").replace("\r\n", "\n")
+    return text, eol
 
 
 def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: str = SENTINEL_END):
@@ -217,11 +248,16 @@ def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: 
 
 
 def is_engine_skill(skill_dir: Path) -> bool:
-    """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter."""
+    """A skill this engine installed carries `source: claude-wiki-engine` in its frontmatter.
+    Requires real YAML frontmatter (text starting with `---`) so a body mention of the tag --
+    e.g. documentation referring to it -- is never mistaken for the engine's own marker."""
     try:
-        head = (skill_dir / "SKILL.md").read_text(encoding="utf-8").split("\n---", 1)[0]
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     except OSError:
         return False
+    if not text.startswith("---"):
+        return False
+    head = text.split("\n---", 1)[0]
     return ENGINE_TAG in head
 
 
@@ -234,7 +270,8 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
         plan.note("keep tools/session (engine copy present; --update refreshes it)")
     else:
         plan.add("copy", f"extra-tools/session -> {dst_tools}",
-                 lambda s=src_tools, d=dst_tools: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+                 lambda s=src_tools, d=dst_tools, b=base: (d.parent.mkdir(parents=True, exist_ok=True),
+                                                            _versioned_backup(b, d), copy_tree(s, d)))
     hand = base / "handoffs"
     for name in ("_TEMPLATE.md", "_USER.template.md"):
         s, d = ENGINE / "templates" / "handoffs" / name, hand / name
@@ -554,6 +591,9 @@ def do_update(cfg: dict):
     skills_real = skills_dir.resolve() if skills_dir.is_symlink() else skills_dir
     for name in cfg["skills"]:
         src, dst = ENGINE / "skills" / name, skills_real / name
+        if dst.is_symlink():
+            plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
+            continue
         plan.add("copy", f"skills/{name} -> {dst}",
                  lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), copy_tree(s, d)))
     if cfg.get("hooks", True):
@@ -567,22 +607,33 @@ def do_update(cfg: dict):
                 cmd_hook, sp = f"node {hdst.as_posix()}", base / "settings.json"
                 plan.add("wire", f"settings.json[{event}] reconcile {hf}",
                          lambda c=cmd_hook, e=event, m=matcher, s=sp: merge_hook(s, c, e, m))
-    cmd = base / "CLAUDE.md"
-    block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
-    plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
-             lambda c=cmd, b=block: inject_block(c, b))
+    if cfg["claude_md"]:
+        cmd = base / "CLAUDE.md"
+        block = (ENGINE / "claude-md" / "ingestion-policy.md").read_text(encoding="utf-8")
+        plan.add("edit", f"CLAUDE.md block refresh -> {cmd.resolve() if cmd.exists() else cmd}",
+                 lambda c=cmd, b=block: inject_block(c, b))
     for name in EXTRA_SKILLS:
         src, dst = ENGINE / "extra-skills" / name, skills_real / name
         if not (dst.exists() and src.exists()):
             continue
+        if dst.is_symlink():
+            plan.note(f"skip '{name}' (symlinked install - already tracks the engine)")
+            continue
         if is_engine_skill(dst):
-            plan.add("copy", f"extra-skills/{name} -> {dst}", lambda s=src, d=dst: (_backup(d), copy_tree(s, d)))
+            plan.add("copy", f"extra-skills/{name} -> {dst}",
+                     lambda s=src, d=dst, b=base: (_versioned_backup(b, d), copy_tree(s, d)))
         else:
-            plan.note(f"skip extra '{name}' (not tagged as an engine copy; replace with: "
-                      f"install.py --force-skills --extras {name})")
+            plan.note(f"skip extra '{name}' (not tagged as an engine copy; move the old copy out of "
+                      f"skills/ (rename or delete it), then run: install.py --extras {name})")
     if any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS):
-        session_plan(plan, base, update=True, claude_md=True)
+        session_plan(plan, base, update=True, claude_md=cfg["claude_md"])
     print(plan.render())
+    if cfg["dry_run"]:
+        print("\n(dry-run - nothing was written)")
+        return
+    if not (cfg.get("yes") or confirm("\nProceed?", default_yes=False)):
+        print("aborted - nothing written")
+        return
     plan.execute()
 
 
@@ -620,6 +671,7 @@ def main():
         "force_skills": args.force_skills,
         "hooks": not args.no_hooks,
         "extra_skills": resolve_extras(args.extras),
+        "yes": args.yes,
     }
     if interactive:
         preset_extras = cfg["extra_skills"]

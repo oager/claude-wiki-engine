@@ -77,7 +77,7 @@ class SessionExtrasTest(unittest.TestCase):
     def cfg(self, **kw):
         base = {"dry_run": False, "config_base": self.tmp, "mode": "copy", "memory": self.tmp / "memory",
                 "content_repo": None, "claude_md": True, "skills": [], "force_skills": False, "hooks": False,
-                "extra_skills": ["preflight", "sync"], "no_pull": True}
+                "extra_skills": ["preflight", "sync"], "no_pull": True, "yes": True}
         return {**base, **kw}
 
     def test_preflight_brings_tools_templates_user_file_and_block(self):
@@ -119,7 +119,96 @@ class SessionExtrasTest(unittest.TestCase):
         self.inst.do_update(self.cfg(extra_skills=[]))
         self.assertNotIn("\nold\n", (s / "preflight/SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("mine", (s / "sync/SKILL.md").read_text(encoding="utf-8"))
-        self.assertTrue((s / "preflight.wikibak").exists())
+        # versioned backup lives under <config_base>/.wikibak/, never under skills/ (a
+        # skills/<name>.wikibak/ dir with a SKILL.md could be loaded as a duplicate skill)
+        baks = list((self.tmp / ".wikibak" / "skills").glob("preflight-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertIn("old", (baks[0] / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertFalse(list(s.glob("*.wikibak*")))
+
+    def test_update_backups_are_versioned_across_multiple_runs(self):
+        self.inst.build_plan(self.cfg(extra_skills=["preflight"])).execute()
+        skill_md = self.tmp / "skills/preflight/SKILL.md"
+        skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\nEDIT1\n", encoding="utf-8")
+        self.inst.do_update(self.cfg(extra_skills=[]))
+        skill_md.write_text(skill_md.read_text(encoding="utf-8") + "\nEDIT2\n", encoding="utf-8")
+        self.inst.do_update(self.cfg(extra_skills=[]))
+        baks = sorted((self.tmp / ".wikibak" / "skills").glob("preflight-*"))
+        self.assertEqual(len(baks), 2)
+        contents = [(b / "SKILL.md").read_text(encoding="utf-8") for b in baks]
+        self.assertTrue(any("EDIT1" in c and "EDIT2" not in c for c in contents))
+        self.assertTrue(any("EDIT2" in c for c in contents))
+        self.assertFalse(list((self.tmp / "skills").glob("*.wikibak*")))
+
+    def test_update_skips_symlinked_extra(self):
+        s = self.tmp / "skills"
+        s.mkdir(parents=True)
+        target = self.inst.ENGINE / "extra-skills" / "preflight"
+        link = s / "preflight"
+        link.symlink_to(target, target_is_directory=True)
+        self.inst.do_update(self.cfg(extra_skills=[]))  # must not crash (rmtree-on-symlink)
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), target.resolve())
+
+    def test_update_skips_symlinked_core_skill(self):
+        s = self.tmp / "skills"
+        s.mkdir(parents=True)
+        target = self.inst.ENGINE / "skills" / "wiki-ingest"
+        link = s / "wiki-ingest"
+        link.symlink_to(target, target_is_directory=True)
+        self.inst.do_update(self.cfg(skills=["wiki-ingest"], extra_skills=[]))  # must not crash
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), target.resolve())
+
+    def test_update_aborts_without_confirm_when_not_yes(self):
+        s = self.tmp / "skills"
+        (s / "preflight").mkdir(parents=True)
+        (s / "preflight/SKILL.md").write_text("---\nsource: claude-wiki-engine\n---\nSENTINEL_UNCONFIRMED\n",
+                                              encoding="utf-8")
+        self.inst.confirm = lambda *a, **kw: False
+        self.inst.do_update(self.cfg(extra_skills=[], yes=False))
+        self.assertIn("SENTINEL_UNCONFIRMED", (s / "preflight/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_update_proceeds_when_confirmed(self):
+        s = self.tmp / "skills"
+        (s / "preflight").mkdir(parents=True)
+        (s / "preflight/SKILL.md").write_text("---\nsource: claude-wiki-engine\n---\nSENTINEL_CONFIRMED\n",
+                                              encoding="utf-8")
+        self.inst.confirm = lambda *a, **kw: True
+        self.inst.do_update(self.cfg(extra_skills=[], yes=False))
+        self.assertNotIn("SENTINEL_CONFIRMED", (s / "preflight/SKILL.md").read_text(encoding="utf-8"))
+
+    def test_update_with_claude_md_false_leaves_it_untouched(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_text("existing\n", encoding="utf-8")
+        self.inst.do_update(self.cfg(claude_md=False, extra_skills=[]))
+        self.assertEqual(cmd.read_text(encoding="utf-8"), "existing\n")
+
+    def test_is_engine_skill_requires_frontmatter(self):
+        d = self.tmp / "x"
+        d.mkdir()
+        (d / "SKILL.md").write_text("# my skill\nsee source: claude-wiki-engine\n", encoding="utf-8")
+        self.assertFalse(self.inst.is_engine_skill(d))
+
+    def test_crlf_claude_md_survives_repeated_injects(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_bytes(b"top\r\n<!-- wiki-engine:start -->\r\nw\r\n<!-- wiki-engine:end -->\r\nbottom\r\n")
+
+        def run_sequence():
+            self.inst.inject_block(cmd, "s\n", self.inst.SESSION_START, self.inst.SESSION_END)
+            self.inst.inject_block(cmd, "s\n", self.inst.SESSION_START, self.inst.SESSION_END)
+            self.inst.inject_block(cmd, "w2")
+
+        run_sequence()
+        raw = cmd.read_bytes()
+        self.assertNotIn(b"\r\r", raw)
+        self.assertGreater(raw.count(b"\r\n"), 0)
+        self.assertEqual(raw.count(b"\r\n"), raw.count(b"\n"))  # every LF is part of a CRLF pair
+        self.assertEqual(raw.count(self.inst.SESSION_START.encode()), 1)
+        self.assertEqual(raw.count(b"<!-- wiki-engine:start -->"), 1)
+
+        run_sequence()
+        self.assertEqual(cmd.read_bytes(), raw)
 
 
 if __name__ == "__main__":

@@ -32,4 +32,9 @@ jobs:
       - name: Session tool tests (includes the leak-guard and publish tests)
         run: python -m pytest -p no:cacheprovider -q extra-tools/session/tests
       - name: Installer dry-run
+        # Prints the plan and writes nothing; --into-repo keeps it off ~/.claude even if that ever regressed.
         run: python install.py --dry-run -y --into-repo "$(mktemp -d)"
+      - name: Installer dry-run (session extras)
+        # Also exercises preflight/sync's dependencies (extra-tools/session, handoff templates, the
+        # session-handoff CLAUDE.md block) so a missing engine file fails CI, not a user's first install.
+        run: python install.py --dry-run -y --into-repo "$(mktemp -d)" --extras preflight,sync
