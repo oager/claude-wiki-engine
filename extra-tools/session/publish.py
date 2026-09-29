@@ -21,6 +21,7 @@ import lib  # noqa: E402
 MAPPING = {
     "skills/preflight": "extra-skills/preflight",
     "skills/sync": "extra-skills/sync",
+    "skills/ripple": "extra-skills/ripple",
     "tools/session": "extra-tools/session",
     "handoffs/_TEMPLATE.md": "templates/handoffs/_TEMPLATE.md",
     "handoffs/_USER.template.md": "templates/handoffs/_USER.template.md",

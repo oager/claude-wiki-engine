@@ -1,12 +1,14 @@
 import publish
 
 
-def _vault(tmp_path, planted=""):
+def _vault(tmp_path, planted="", ripple=""):
     v = tmp_path / "vault"
     (v / "skills/preflight").mkdir(parents=True)
     (v / "skills/sync").mkdir(parents=True)
     (v / "skills/preflight/SKILL.md").write_text("---\nname: preflight\n---\nbody\n", encoding="utf-8")
     (v / "skills/sync/SKILL.md").write_text("---\nname: sync\n---\nbody\n", encoding="utf-8")
+    (v / "skills/ripple").mkdir(parents=True)
+    (v / "skills/ripple/SKILL.md").write_text(f"---\nname: ripple\n---\nbody {ripple}\n", encoding="utf-8")
     t = v / "tools/session"
     (t / "tests").mkdir(parents=True)
     (t / "__pycache__").mkdir()
@@ -79,3 +81,13 @@ def test_refuses_when_profile_has_only_publish_deny(tmp_path, monkeypatch):
                          lambda: {"profile": {"publish_deny": ["acct-42"]}})
     res = publish.publish(e, vault=v)
     assert res["status"] == "refused" and "identity" in res["reason"]
+
+
+def test_publish_ships_ripple_tagged_and_guards_it(tmp_path):
+    v, e = _vault(tmp_path, ripple="PartnerName"), _engine(tmp_path)
+    res = publish.publish(e, vault=v, needles=["secret-host", "partnername"])
+    assert res["status"] == "refused" and [h.split(":")[0] for h in res["hits"]] == ["extra-skills/ripple/SKILL.md"]
+    (tmp_path / "clean").mkdir()
+    v2, e2 = _vault(tmp_path / "clean"), _engine(tmp_path / "clean")
+    assert publish.publish(e2, vault=v2, needles=["secret-host"])["status"] == "ok"
+    assert "source: claude-wiki-engine" in (e2 / "extra-skills/ripple/SKILL.md").read_text(encoding="utf-8")

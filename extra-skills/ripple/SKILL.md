@@ -1,7 +1,7 @@
 ---
 source: claude-wiki-engine
 name: ripple
-description: Consumer-impact sweep when data or interfaces change. Use whenever new data lands (table, column, endpoint, collector, metric, feed) or existing data changes shape/semantics/path/cadence — by us or by Rich — and we need to know which surfaces (portals, dashboards, analyst, deepdesk, LLM prompts, digests, crons, scorecards, docs/memory) break, go stale, or could benefit. Also for "what did Rich change?" (git divergence, live uncommitted WIP, cron diffs). Modes — forward (new data → opportunity), reverse (changed data → blast radius), discover (partner changes). Report-first gated impact table, then executes picked rows. Trigger on "who reads/uses this", "what breaks if…", "blast radius", "ripple", any schema/rename/shape change — even when no portal or consumer is named explicitly. NOT for repo onboarding (/repo-scan) or post-bugfix hardening (/error-harden).
+description: Consumer-impact sweep when data or interfaces change. Use whenever new data lands (table, column, endpoint, collector, metric, feed) or existing data changes shape/semantics/path/cadence — by us or by a partner/collaborator — and we need to know which surfaces (portals, dashboards, analysis tools, LLM prompts, digests, crons, scorecards, docs/memory) break, go stale, or could benefit. Also for "what did <partner> change?" (git divergence, live uncommitted WIP, cron diffs; partners are named in the project's `docs/DATA_CONSUMERS.md`). Modes — forward (new data → opportunity), reverse (changed data → blast radius), discover (partner changes). Report-first gated impact table, then executes picked rows. Trigger on "who reads/uses this", "what breaks if…", "blast radius", "ripple", any schema/rename/shape change — even when no portal or consumer is named explicitly. NOT for repo onboarding (/repo-scan) or post-bugfix hardening (/error-harden).
 type: skill
 ---
 
@@ -23,6 +23,11 @@ on** — grep the actual SPA fetches, loaders, SQL, prompt files. A stale map ma
 it must never make you wrong. No map in the repo? Walk the universal surface taxonomy (below)
 to derive one — that walk IS the bootstrap — and write the doc as part of Step 6.
 
+The map also carries a `## Partners` section — the people whose changes discover mode sweeps. One entry
+per partner: who they are and what they own, where their work runs (repos, branches, hosts, the working
+trees and crontabs to diff), and how to flag them. "What did <name> change?" resolves through it. No
+section, or the name isn't in it? Ask the user for the same facts and write them in Step 6.
+
 ## Seam types & their characteristic failures
 
 Every propagation incident happens at a seam. Know the failure mode before you sweep:
@@ -34,8 +39,8 @@ Every propagation incident happens at a seam. Know the failure mode before you s
 | DB table/column | grep SQL + ORM for table/column | Semantics misread (a value's *meaning* changed, not its shape) — consumers compute confidently wrong numbers |
 | Prompt contract | grep prompt files for the input filename | New input file with no prompt paragraph = the LLM ignores it or hallucinates a read |
 | Framework state key | the state TypedDict/schema definition | Undeclared key silently dropped in transit; all readers see None |
-| File path/rename | grep for old path AND glob fallbacks | Hardened trading path survives; advisory consumers break quietly |
-| Live-vs-git | `git status` on the box working tree | Crons run WORKING-TREE files: uncommitted WIP can be LIVE, and the committed version the regression. Never assume uncommitted = inactive |
+| File path/rename | grep for old path AND glob fallbacks | Hardened authority path survives; advisory consumers break quietly |
+| Live-vs-git | `git status` on the working tree the crons/services run from | Crons run WORKING-TREE files: uncommitted WIP can be LIVE, and the committed version the regression. Never assume uncommitted = inactive |
 
 ## Universal surface taxonomy — makes this runnable on ANY project
 
@@ -48,11 +53,11 @@ only what probes can't see.** Each category ends with a verdict — `found` / `n
 |---|---|---|
 | Portal / dashboard | Is there a UI that shows (or should show) this data? | glob `portal/ dashboard/ static/*.html grafana/`; grep SPA `fetch(`/api routes |
 | LLM pipeline — input | Does any LLM *read* this (prompt context, gather file, capture)? | grep prompt files (`*.txt`, `prompts/`, `system_prompt`), agents/gather dirs, model-client imports |
-| LLM pipeline — authority | Does anything that *decides or trades* read it? (highest gate) | repo change-gate doc (CLAUDE.md); grep the trading/decision dirs for the seam |
+| LLM pipeline — authority | Does anything that *decides, trades, deploys or moves money* read it? (highest gate) | repo change-gate doc (CLAUDE.md); grep the decision/execution dirs for the seam |
 | Messaging / alerts | Digest, Discord/Slack, webhook, watchdog that voices or watches it? | grep `webhook discord telegram notify alert`; cron scripts that post |
 | Scheduled consumers | Crons/timers/services that read it downstream (graders, scorecards, recals)? | `crontab -l`, `systemctl list-timers`, scripts/ + cron/ dirs |
 | Derived stores | Tables/files/caches computed FROM it (walk the derivation chain to ITS consumers too) | grep the table/file/route name repo-wide for readers AND writers |
-| Cross-project | Do OTHER repos/bots in the portfolio consume it? | grep the seam name across sibling workspaces (portfolio index = the repo directory table in global CLAUDE.md) |
+| Cross-project | Do OTHER repos/services in the portfolio consume it? | grep the seam name across sibling workspaces (portfolio index = the user's repo list: global CLAUDE.md or `_USER.md`; none → ask) |
 | Tests / fixtures | Do tests encode the OLD shape? (fixtures pass together with the bugs) | grep `tests/` for the seam name |
 | Docs / contracts | Do docs, prompt contracts, or READMEs assert the old behavior? | grep `docs/` + prompt files for the seam name |
 | Memory / wiki | Do project-memory or global-wiki pages assert the old shape? (knowledge pages are consumers too) | grep the project memory dir + `~/.claude/memory/` for the seam name |
@@ -74,7 +79,7 @@ so future runs see what was checked, not just what was found.
   pushed and pulled — synced commits can still be unswept. So `docs/DATA_CONSUMERS.md` carries
   a *Sweep watermark* (last-swept commit per portfolio repo). "Recent" = watermark→HEAD:
   - `git fetch` + `git log <watermark>..HEAD --stat` per repo; merged PRs since the watermark
-    (`gh pr list --state merged`) are the highest-signal changelist where trading-path = PR-only
+    (`gh pr list --state merged`) are the highest-signal changelist where the authority path = PR-only
   - triage each commit for seam relevance by its changed paths: endpoint/SPA files, loaders,
     schema/init.sql, prompt files, gather/collector scripts, cron defs → seam candidates;
     docs-only/test-only → note and skip
@@ -82,7 +87,8 @@ so future runs see what was checked, not just what was found.
 
   **Live-state sweep (what git can't show):**
   - `log origin/main..HEAD` and `HEAD..origin/main` (divergence, unpulled work — both directions)
-  - `git status` + `git diff` on box working trees (is WIP live? see seam table)
+  - `git status` + `git diff` on the working trees the partner's crons/services run from (Partners
+    section; is WIP live? see seam table)
   - crontab vs its dated backups; `.env` / systemd unit diffs; NEW files in state dirs
     (a new state file = a new seam someone created)
 
@@ -110,7 +116,7 @@ One row per consumer surface (including "none — checked"):
 
 | surface | seam | impact | evidence | gate |
 |---|---|---|---|---|
-| e.g. portal panel X | endpoint /api/y | **breaks** / **stale** / **opportunity** / none | file:line | advisory / trading-path / partner-owned |
+| e.g. portal panel X | endpoint /api/y | **breaks** / **stale** / **opportunity** / none | file:line | advisory / authority-path / partner-owned |
 
 Impact verdicts must carry evidence (file:line from Step 1's greps), not registry hearsay.
 
@@ -121,7 +127,8 @@ Impact verdicts must carry evidence (file:line from Step 1's greps), not registr
 - **Instrument fidelity**: ungraded/new data gets *narration and context* now; *authority*
   (gates, sizing, prominent UI, alerts) waits for scorecard/grading evidence. Say which side
   of the line each row is on.
-- **Change class**: advisory/display → direct-commit; trading-path or unsure → PR-only;
+- **Change class**: advisory/display → direct-commit; authority path (anything that decides, trades,
+  deploys or moves money) or unsure → PR-only;
   partner-owned surface → flag to partner, don't touch.
 
 ## Step 4 — Present & execute
@@ -153,8 +160,9 @@ direct, matching surrounding style. Never execute partner-owned rows.
   now; **structural** (contradictions across pages, duplicated claims, multi-page drift) →
   hand the specific file list to `/doc-review` (it owns doc-hygiene method — scoped lint,
   never a full sweep from inside a ripple run).
-- Durable lessons → project memory; cross-bot lessons → the promotion rule.
-- Partner-owned findings → flag through the usual channel with evidence.
+- Durable lessons → project memory; cross-project lessons → the promotion rule (`_USER.md` Conventions).
+- Partner-owned findings → flag through the channel the Partners section names, with evidence.
+- Partners section: add or correct any partner fact this run learned (new host, new cron, new repo).
 
 ## Boundaries
 

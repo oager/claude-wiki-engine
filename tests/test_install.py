@@ -596,15 +596,20 @@ class ReviewFixesTest(unittest.TestCase):
             self.assertTrue(self.inst.is_engine_skill(self.inst.ENGINE / "extra-skills" / name), name)
 
     def test_update_refreshes_untagged_committed_extra_versions(self):
-        # every extra shipped untagged before this version: its latest untagged bytes = today's minus the tag line
-        others = sorted(set(self.inst.EXTRA_SKILLS) - self.inst.SESSION_EXTRAS)
-        for name in others:
+        # An extra shipped untagged before this version and unchanged since: its latest untagged bytes = today's
+        # minus the tag line. An extra edited after tagging (ripple, made generic) no longer derives that way; its
+        # old untagged versions are still recognised by the hashes alone.
+        others = []
+        for name in sorted(set(self.inst.EXTRA_SKILLS) - self.inst.SESSION_EXTRAS):
             src = (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_bytes()
             legacy = src.replace(self.inst.ENGINE_TAG.encode() + b"\n", b"", 1)
             self.assertNotEqual(legacy, src, name)
-            self.assertIn(hashlib.sha256(legacy).hexdigest(), self.inst.LEGACY_ENGINE_SKILL_SHA256, name)
+            if hashlib.sha256(legacy).hexdigest() not in self.inst.LEGACY_ENGINE_SKILL_SHA256:
+                continue
+            others.append(name)
             (self.skills / name).mkdir(parents=True)
             (self.skills / name / "SKILL.md").write_bytes(legacy)
+        self.assertGreaterEqual(len(others), 5, others)  # an extra edited after tagging is the exception
         self.update()
         for name in others:
             self.assertEqual((self.skills / name / "SKILL.md").read_bytes(),

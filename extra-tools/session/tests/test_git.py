@@ -60,17 +60,17 @@ def test_git_local_no_upstream(repo):
 def test_collab_others_since_sha(repo):
     since = _sha(repo)
     commit(repo, "mine")
-    commit(repo, "his", name="Richard", email="richard@example.com")
-    commit(repo, "his2", name="Richard", email="richard@example.com")
+    commit(repo, "his", name="Bruno", email="bruno@example.com")
+    commit(repo, "his2", name="Bruno", email="bruno@example.com")
     c = op.collab_block(repo, {"repo_sha": since}, IDS, {})
-    assert c == {"since": since, "shared": False, "others": [{"author": "Richard", "commits": 2}]}
+    assert c == {"since": since, "shared": False, "others": [{"author": "Bruno", "commits": 2}]}
 
 
 def test_collab_unknown_sha_uses_window(repo):
-    commit(repo, "his", name="Richard", email="richard@example.com")
+    commit(repo, "his", name="Bruno", email="bruno@example.com")
     c = op.collab_block(repo, {"repo_sha": "deadbee"}, IDS, {"shared": True})
     assert c["since"] == "14 days" and c["shared"] is True
-    assert c["others"] == [{"author": "Richard", "commits": 1}]
+    assert c["others"] == [{"author": "Bruno", "commits": 1}]
 
 
 def test_collab_ignores_upstream_only_commits(repo):

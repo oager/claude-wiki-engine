@@ -83,7 +83,7 @@ def test_is_self():
     ids = {"names": ["alice"], "emails": ["alice@example.com"]}
     assert lib.is_self("alice", "x@y", ids)
     assert lib.is_self("Someone", "ALICE@example.com", ids)
-    assert not lib.is_self("Richard", "r@example.com", ids)
+    assert not lib.is_self("Bruno", "r@example.com", ids)
 
 
 def test_host_target(monkeypatch):
