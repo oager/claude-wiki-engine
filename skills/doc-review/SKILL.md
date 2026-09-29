@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: doc-review
 description: >
   Review and clean the memory wiki — find stale content, duplicates, dead weight, broken links,

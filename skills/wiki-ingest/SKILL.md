@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: wiki-ingest
 description: >
   The canonical ingestion engine for this Claude memory wiki (memory/), implementing Karpathy's

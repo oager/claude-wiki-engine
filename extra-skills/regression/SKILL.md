@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: regression
 description: Run this project's regression test suite, report results, block deploys on failure
 ---

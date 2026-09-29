@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: wiki-sync
 description: >
   End-of-session memory checkpoint. Reviews what was learned this session for durable,

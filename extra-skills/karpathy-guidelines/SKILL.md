@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: karpathy-guidelines
 description: Andrej Karpathy's coding principles — applied before writing, reviewing, or refactoring any code
 disable-model-invocation: true

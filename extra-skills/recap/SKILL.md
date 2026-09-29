@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: recap
 description: Generate a paste-ready handoff markdown file summarizing the current session's work. For handing off to a session on another machine, or any cold session that needs to catch up on what this one has been doing. Saves the file to Downloads so it's easy to paste.
 disable-model-invocation: true

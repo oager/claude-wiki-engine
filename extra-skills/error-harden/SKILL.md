@@ -1,4 +1,5 @@
 ---
+source: claude-wiki-engine
 name: error-harden
 description: Post-bugfix error hardening checklist — enumerate failure modes, implement auto-handling, add alerts, create/update ERROR_HANDLING.md. Invoke immediately after fixing any bug.
 type: skill
