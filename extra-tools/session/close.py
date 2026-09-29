@@ -309,15 +309,17 @@ def _claim(lock, token):
     except OSError:
         _drop_empty(lock)  # our own dir, still empty: don't leave it to block everyone for 300 s
         return False
+    ino = os.fstat(fd).st_ino
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(token)
     except OSError:
-        try:
-            (lock / OWNER).unlink()
+        try:  # only OUR owner file: a stale-breaker may have moved our dir aside and another waiter taken the path
+            if os.stat(lock / OWNER).st_ino == ino:
+                (lock / OWNER).unlink()
+                _drop_empty(lock)
         except OSError:
             pass
-        _drop_empty(lock)
         return False
     try:
         (lock / LOCK_IGNORE).write_text("*\n", encoding="utf-8")

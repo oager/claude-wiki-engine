@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,7 @@ LEGACY_ENGINE_SKILL_SHA256 = {
 }
 SESSION_START = "<!-- session-handoff:start -->"
 SESSION_END = "<!-- session-handoff:end -->"
+MANAGED_BLOCKS = [(SENTINEL_START, SENTINEL_END), (SESSION_START, SESSION_END)]  # every block we edit in CLAUDE.md
 
 
 # ------------------------- detection -------------------------
@@ -269,6 +271,8 @@ def _replace_backed_up(config_base: Path, dst: Path, same, replace):
     """Run `replace()` -- but when dst holds something other than the engine copy (`same()` is False), only
     after `_versioned_backup` succeeded. A failed backup leaves dst untouched and returns a Skipped."""
     if (dst.exists() or dst.is_symlink()) and not same() and not _versioned_backup(config_base, dst):
+        if dst.is_symlink():  # _versioned_backup never follows a symlink, so it is not replaced either
+            return Skipped(f"{dst} is a symlink - left unchanged, not replaced")
         return Skipped(f"backup failed for {dst} - left it unchanged, not replaced "
                        f"(check that {config_base / '.wikibak'} is a writable directory)")
     replace()
@@ -294,12 +298,21 @@ def block_span(text: str, start: str, end: str) -> tuple[int, int] | None | bool
     i, j = text.find(start), text.find(end)
     if ns != 1 or ne != 1 or j < i + len(start):
         return False
-    return i, j + len(end)
+    k = j + len(end)
+    # Another managed block nested in this one, this one nested in it, or the two interleaved: replacing or
+    # removing either span would erase or split the other block's markers.
+    for s2, e2 in MANAGED_BLOCKS:
+        if (s2, e2) == (start, end):
+            continue
+        marks = [m.start() for m in re.finditer(re.escape(s2) + "|" + re.escape(e2), text)]
+        if marks and (any(i < m < k for m in marks) or min(marks) < i < max(marks)):
+            return False
+    return i, k
 
 
 def _markers_broken(target: Path, start: str) -> Skipped:
-    return Skipped(f"{target}: the {start} block markers are unpaired, duplicated or out of order - left "
-                   "unchanged; fix them by hand and re-run")
+    return Skipped(f"{target}: the {start} block markers are unpaired, duplicated, out of order or tangled "
+                   "with another managed block - left unchanged; fix them by hand and re-run")
 
 
 def inject_block(claude_md: Path, block: str, start: str = SENTINEL_START, end: str = SENTINEL_END):
@@ -327,7 +340,7 @@ def plan_block_edit(plan: Plan, detail: str, claude_md: Path, block: str, start:
     """Plan an inject_block edit, or -- when the file's markers are already broken -- a note instead of a step
     (inject_block would refuse anyway; it re-checks at execute time in case the file changed meanwhile)."""
     if block_state(claude_md, start, end) == "broken":
-        plan.note(_markers_broken(claude_md.resolve(), start).replace(": the ", ": CLAUDE.md - the ", 1))
+        plan.note(_markers_broken(claude_md.resolve(), start))
         return
     plan.add("edit", detail, lambda c=claude_md, b=block, s=start, e=end: inject_block(c, b, s, e))
 
@@ -458,7 +471,9 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
                   f"in ~/.claude/handoffs unless CLAUDE_VAULT is set (set it to {base} in the environment Claude "
                   "Code runs in - it moves the vault only, not the tool path)")
     src_tools, dst_tools = ENGINE / "extra-tools" / "session", base / "tools" / "session"
-    if dst_tools.exists() and not (dst_tools / ".engine").exists():
+    if dst_tools.is_symlink():
+        plan.note("skip tools/session (symlinked install - not replacing it)")
+    elif dst_tools.exists() and not (dst_tools / ".engine").exists():
         plan.note("skip tools/session (present and not from the engine - not overwriting)")
     elif dst_tools.exists() and not update:
         plan.note("keep tools/session (engine copy present; --update refreshes it)")

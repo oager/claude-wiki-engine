@@ -533,3 +533,31 @@ def test_lost_lock_result_keeps_dropped(vault, pushable, monkeypatch):  # noqa: 
     monkeypatch.setattr(cl, "_held", lambda lock, token: False)
     res = cl.push([str(vault / "handoffs/k.md"), str(vault / "handoffs/gone.md")], "m")
     assert res["status"] == "locked" and res.get("dropped") == ["handoffs/gone.md"]
+
+
+def test_claim_write_failure_never_removes_another_holders_lock(tmp_path, monkeypatch):
+    # Our fresh dir is moved aside mid-claim and another waiter takes the path: its owner file is not ours.
+    lock = tmp_path / ".sync.lock"
+    lock.mkdir()
+    aside = tmp_path / "aside"
+
+    class Broken:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, _):
+            os.rename(lock, aside)
+            lock.mkdir()
+            (lock / cl.OWNER).write_text("other 1", encoding="utf-8")
+            raise OSError("disk full")
+
+    def fdopen(fd, *a, **k):
+        cl.os.close(fd)
+        return Broken()
+
+    monkeypatch.setattr(cl.os, "fdopen", fdopen)
+    assert cl._claim(lock, "t") is False
+    assert (lock / cl.OWNER).read_text(encoding="utf-8") == "other 1"

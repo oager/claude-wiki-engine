@@ -611,6 +611,68 @@ class ReviewFixesTest(unittest.TestCase):
                              (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_bytes(), name)
             self.assertEqual(len(list((self.tmp / ".wikibak/skills").glob(f"{name}-*"))), 1, name)
 
+    # --- round 4 ---
+
+    def blocks(self, shape: str) -> bytes:
+        W = (self.inst.SENTINEL_START, self.inst.SENTINEL_END)
+        S = (self.inst.SESSION_START, self.inst.SESSION_END)
+        order = {"nested": [W[0], "w", S[0], "s", S[1], W[1]],
+                 "interleaved": [W[0], "w", S[0], "s", W[1], S[1]]}[shape]
+        return ("top\n" + "\n".join(order) + "\nbottom\n").encode()
+
+    def test_nested_or_interleaved_blocks_are_left_alone(self):
+        W = (self.inst.SENTINEL_START, self.inst.SENTINEL_END)
+        S = (self.inst.SESSION_START, self.inst.SESSION_END)
+        for shape in ("nested", "interleaved"):
+            for start, end in (W, S):
+                with self.subTest(shape=shape, block=start):
+                    data = self.blocks(shape)
+                    self.assert_left_alone(lambda c: self.inst.inject_block(c, "new", start, end), data)
+                    self.assert_left_alone(lambda c: self.inst.remove_block(c, start, end), data)
+
+    def test_install_over_nested_blocks_plans_no_edit(self):
+        cmd = self.tmp / "CLAUDE.md"
+        data = self.blocks("nested")
+        cmd.write_bytes(data)
+        plan = self.inst.build_plan(self.cfg())
+        self.assertFalse(any("CLAUDE.md" in d for _, d, _ in plan.steps))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            plan.execute()
+        self.assertNotIn("[ok] edit", out.getvalue())
+        self.assertEqual(cmd.read_bytes(), data)
+
+    def test_broken_marker_note_names_the_file_once(self):
+        cmd = self.tmp / "CLAUDE.md"
+        cmd.write_bytes(self.blocks("interleaved"))
+        plan = self.inst.build_plan(self.cfg(extra_skills=[]))
+        note = [n for n in plan.notes if "left unchanged" in n][0]
+        self.assertEqual(note.count("CLAUDE.md"), 1, note)
+
+    def test_symlinked_tools_session_is_skipped_not_crashed(self):
+        real = self.tmp / "elsewhere"
+        shutil.copytree(self.inst.ENGINE / "extra-tools/session", real)
+        (self.tmp / "tools").mkdir()
+        (self.tmp / "tools/session").symlink_to(real, target_is_directory=True)
+        (self.skills / "preflight").mkdir(parents=True)
+        shutil.copy2(self.inst.ENGINE / "extra-skills/preflight/SKILL.md", self.skills / "preflight/SKILL.md")
+        out = self.update()  # must not raise
+        self.assertIn("skip tools/session (symlinked", out)
+        self.assertTrue((self.tmp / "tools/session").is_symlink())
+        self.assertIn(self.inst.SESSION_START, self.claude_md())  # later steps still ran
+
+    def test_symlinked_template_warning_says_symlink(self):
+        self.inst.build_plan(self.cfg()).execute()
+        tmpl = self.tmp / "handoffs/_TEMPLATE.md"
+        mine = self.tmp / "my-template.md"
+        mine.write_text("my own template\n", encoding="utf-8")
+        tmpl.unlink()
+        tmpl.symlink_to(mine)
+        out = self.update()
+        self.assertEqual(mine.read_text(encoding="utf-8"), "my own template\n")
+        self.assertIn("is a symlink - left unchanged", out)
+        self.assertNotIn("writable", out)
+
     def fake_legacy_recap(self) -> bytes:
         """A synthetic untagged 'older engine recap' whose hash this test registers as a known engine version
         (historical files are never copied into the tree as fixtures: they predate sanitisation)."""
