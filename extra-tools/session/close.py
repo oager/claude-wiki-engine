@@ -381,17 +381,15 @@ def _break_stale(lock, st):
     return True
 
 
-def push(files, message, retries=15):
-    """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
+def lock_token():
+    return f"{os.getpid()} {secrets.token_hex(8)}"
 
-    The vault is a shared working tree (every session plus any auto-commit tool): never `add -A`, never
-    reset/force.
-    """
-    if not lib.vault_is_git():
-        return {"status": "local"}  # a plain vault: the files are written; there is nothing to commit or push
-    v = lib.vault().resolve()
-    lock = v / ".sync.lock"
-    token = f"{os.getpid()} {secrets.token_hex(8)}"
+
+def acquire_lock(lock, token, retries=15, wait=2):
+    """Take the vault's `.sync.lock` (mkdir + owner file), breaking a lock older than 300 s. True when held.
+
+    Shared by /sync's push and /preflight's pull: every git operation that moves the vault's HEAD or working tree
+    goes through it. A mkdir error other than "exists" (read-only vault) propagates to the caller."""
     for _ in range(retries):
         try:
             lock.mkdir()
@@ -404,9 +402,23 @@ def push(files, message, retries=15):
                 pass
         else:
             if _claim(lock, token):
-                break
-        time.sleep(2)
-    else:
+                return True
+        time.sleep(wait)
+    return False
+
+
+def push(files, message, retries=15):
+    """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
+
+    The vault is a shared working tree (every session plus any auto-commit tool): never `add -A`, never
+    reset/force.
+    """
+    if not lib.vault_is_git():
+        return {"status": "local"}  # a plain vault: the files are written; there is nothing to commit or push
+    v = lib.vault().resolve()
+    lock = v / ".sync.lock"
+    token = lock_token()
+    if not acquire_lock(lock, token, retries):
         return {"status": "locked"}
     try:
         def g(*args, t=8, literal=True):

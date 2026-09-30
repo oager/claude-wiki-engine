@@ -104,9 +104,9 @@ Market:   <one line>                               (trading only)
 Global:   <skills changed · relevant knowledge · Claude Code relaunch · plugins differing from catalog>
 Inbox:    <N notes: subjects>                      (only if any)
 User:     <user checks: quiet one line | loud items>
-⚠ Vault:  <stuck merge | pull failed>              (only if any)
+⚠ Vault:  <stuck merge | pull failed | pull skipped: a /sync push was running — handoff may be one sync behind, re-run /preflight>   (only if any; the last when global.pull starts with "skipped (a /sync push" or "skipped (cannot take the vault lock")
 Vault:    local only (not in git)                  (only when global.vault == "local")
-Vault:    git, no remote: not synced across machines (only when global.pull starts with "skipped (" — say why from the rest of the string: no remote, no upstream tracking, or detached HEAD)
+Vault:    git, no remote: not synced across machines (only when global.pull is "skipped (no remote)", "skipped (no upstream …)" or "skipped (detached HEAD)" — say which)
 ━━━━━━━━━━━━━━━━━━━━━━
 Next up:  1. … 2. … 3. …
 Start on #1?
