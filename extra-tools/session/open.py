@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import close  # noqa: E402
 import inbox  # noqa: E402
 import lib  # noqa: E402
 import procs  # noqa: E402
@@ -29,8 +30,27 @@ _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
 # --- global block ----------------------------------------------------------------
 
+PULL_LOCK_TRIES = 5  # x 2 s: a /sync push holds the lock for seconds; /preflight should not wait longer than ~10 s
+
+
 def vault_state():
-    v = str(lib.vault())
+    """Pull the vault under the same `.sync.lock` as /sync's push: never pull into a push that is mid-rebase, and
+    never read that push's in-progress rebase as a stuck merge."""
+    lock = Path(lib.vault()) / ".sync.lock"
+    token = close.lock_token()
+    try:
+        held = close.acquire_lock(lock, token, retries=PULL_LOCK_TRIES)
+    except OSError as e:
+        return {"pull": f"skipped (cannot take the vault lock: {type(e).__name__})", "stuck_merge": False}
+    if not held:
+        return {"pull": "skipped (a /sync push is in progress; re-run /preflight to pull)", "stuck_merge": False}
+    try:
+        return _pull_locked(str(lib.vault()))
+    finally:
+        close._release(lock, token)
+
+
+def _pull_locked(v):
     _, out, _ = lib.RUN(["git", "-C", v, "status", "--porcelain"])
     stuck = (lib.git_paths(v, "MERGE_HEAD")[0].exists() or lib.rebase_in_progress(v)
              or any(line[:2] in UNMERGED for line in out.splitlines()))

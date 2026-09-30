@@ -1,6 +1,6 @@
 # Error Handling — session tools (`open.py` / `close.py` / `lib.py`)
 
-Last updated: 2026-09-28
+Last updated: 2026-09-30
 
 ## 1. Collector never crashes the skill
 
@@ -77,6 +77,13 @@ Last updated: 2026-09-28
   `add -A` elsewhere (Obsidian-git) never commits it.
 - Vault state (`rebase-merge`, `rebase-apply`, `MERGE_HEAD`) is located with `git rev-parse --git-path`, so a
   worktree or `.git`-file vault is checked; if git fails, `<vault>/.git/<name>` as before.
+
+- `/preflight`'s vault pull takes the same `.sync.lock` (2026-09-30, `open.vault_state` via `close.acquire_lock`), for
+  the stuck-merge check and the pull together. Before, it could `pull --ff-only` into a push that was mid
+  `pull --rebase`, and it read that push's in-progress rebase as a stuck merge. It waits up to ~10 s
+  (`PULL_LOCK_TRIES`); still held → `pull: "skipped (a /sync push is in progress; ...)"`, `stuck_merge: false`, and
+  the report says the handoff may be one sync behind. An unwritable vault → `skipped (cannot take the vault lock: …)`,
+  never a crash.
 
 ## 4b. Profile entries and the repo handoff
 - A malformed Profile entry (`{"health": [{"URL": ...}]}`, `{"services": ["unit"]}`, a section that is not a list)
