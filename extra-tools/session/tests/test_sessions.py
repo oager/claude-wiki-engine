@@ -235,3 +235,42 @@ def test_unknown_liveness_past_grace_deleted(vault, monkeypatch):
     p = _entry(vault, "u1", 999, age_s=GRACE_S + 1)
     _alive(monkeypatch, {999: (None, None)})
     assert sessions.others(KEY) == [] and not p.exists()
+
+
+# Acceptance finding 2026-10-04: a clean /exit left its registry entry behind (only lazily pruned by a later
+# session of the same project). SessionEnd now runs `close.py session end`, which removes this process's entries.
+def test_deregister_removes_own_entries_in_every_project(vault, me_env):
+    mine = _mine(vault)
+    _entry(vault, "aaaa1111-bbbb", 4242)
+    other_dir = vault / "handoffs/.live/other-key"
+    other_dir.mkdir(parents=True)
+    old_id = other_dir / "old0-4242.json"  # same process under an id it had before a /clear
+    old_id.write_text(json.dumps({"session_id": "old0", "pid": 4242, "host": socket.gethostname()}), encoding="utf-8")
+    keep_pid = _entry(vault, "cccc", 5555)
+    keep_host = _entry(vault, "dddd", 4242, host="another-box")
+    gone = sessions.deregister()
+    assert sorted(gone) == sorted([str(mine), str(old_id)])
+    assert not mine.exists() and not old_id.exists()
+    assert keep_pid.exists() and keep_host.exists()
+
+
+def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CLAUDE_PID", raising=False)
+    p = _entry(vault, "aaaa1111-bbbb", 4242)
+    assert sessions.deregister() == []
+    assert p.exists()
+
+
+@pytest.mark.parametrize("reason,removed", [("clear", False), ("resume", False), ("prompt_input_exit", True),
+                                            ("logout", True), ("other", True)])
+def test_session_end_cli_keeps_entry_on_clear(vault, me_env, monkeypatch, capsys, reason, removed):
+    import io
+
+    import close as cl
+    p = _entry(vault, "aaaa1111-bbbb", 4242)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": "SessionEnd", "reason": reason})))
+    cl.main(["session", "end"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert p.exists() is not removed  # /clear keeps it: register() carries the focus over to the new id

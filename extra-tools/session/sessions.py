@@ -146,6 +146,21 @@ def register(key, root, updated_seen, focus=None):
     return {"registered": True, "path": str(p)}
 
 
+def deregister():
+    """Remove this process's entries from every project (SessionEnd hook). Returns the paths removed."""
+    m = me()
+    base = lib.vault() / "handoffs" / ".live"
+    if m is None or not base.is_dir():
+        return []
+    host, gone = socket.gethostname(), []
+    for d in sorted(base.iterdir()):
+        if d.is_dir():
+            for p in _own_pid_files(d, m[1], host):
+                _unlink(p)
+                gone.append(str(p))
+    return gone
+
+
 def set_focus(key, text):
     p = _mine_path(key)
     data = _read(p) if p else None

@@ -209,3 +209,28 @@ def test_push_without_literal_pathspecs_would_wrongly_refuse_bracket_deletion(va
     tracked = _git(vault, "ls-files").splitlines()
     assert bracket not in tracked
     assert sibling in _git(vault, "ls-files")
+
+
+# Acceptance finding 2026-10-04: a deletion already staged with `git rm` (gone from disk AND the index, still in
+# HEAD) was dropped instead of committed, because the tracked check looked only at the index.
+def test_push_commits_deletion_already_staged_with_git_rm(vault, pushable):  # noqa: F811
+    rel = "handoffs/sandbox.md"
+    _commit_new(vault, rel)
+    _git(vault, "rm", "-q", "--", rel)
+    res = cl.push([str(vault / rel)], "m")
+    assert res["status"] == "ok", res
+    assert not res.get("dropped")
+    status = _git(pushable, "log", "-1", "--name-status", "--format=")
+    assert status.strip().startswith("D"), status
+    assert _git(vault, "status", "--porcelain", "--", rel) == ""
+
+
+def test_push_commits_rename_already_staged_with_git_mv(vault, pushable):  # noqa: F811
+    old_rel, new_rel = "notes/old.md", "notes/new.md"
+    _commit_new(vault, old_rel)
+    _git(vault, "mv", "--", old_rel, new_rel)
+    res = cl.push([str(vault / old_rel), str(vault / new_rel)], "m")
+    assert res["status"] == "ok", res
+    assert not res.get("dropped")
+    status = _git(pushable, "log", "-1", "--name-status", "--format=")
+    assert any(line.startswith("R100") for line in status.splitlines()), status

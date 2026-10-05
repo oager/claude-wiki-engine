@@ -6,7 +6,8 @@ Installs the Karpathy-style LLM-wiki engine into a Claude Code config:
   - extras      (optional workflow skills, opt-in)    -> <config>/skills/   (skip-if-exists)
   - framework   (schema.md, overview.md, MEMORY.md,   -> <config>/memory/   (seed-if-absent)
                  log.md, sources/entities/concepts/synthesis/raw/raw/archive)
-  - hook        (wiki-index-check.cjs)                -> <config>/hooks/ + settings.json (safe merge)
+  - hooks       (wiki-index-check, wiki-sync-nudge,   -> <config>/hooks/ + settings.json (safe merge)
+                 session-end .cjs)
   - CLAUDE.md   ingestion-policy block                -> <config>/CLAUDE.md  (sentinel-bounded)
   - session     (tools/session, with preflight/sync)  -> <config>/tools/session/  (skip-if-foreign)
   - CLAUDE.md   session-handoff block                 -> <config>/CLAUDE.md  (sentinel-bounded)
@@ -77,6 +78,7 @@ RAW_README = (
 HOOKS = [
     ("wiki-index-check.cjs", "PostToolUse", "Write|Edit|MultiEdit"),
     ("wiki-sync-nudge.cjs", "Stop", ""),  # once-per-session /wiki-sync nudge (Stop hooks take no matcher)
+    ("session-end.cjs", "SessionEnd", ""),  # drop this session's live-registry entry on exit (no-op without tools)
 ]
 SENTINEL_START = "<!-- wiki-engine:start -->"
 SENTINEL_END = "<!-- wiki-engine:end -->"

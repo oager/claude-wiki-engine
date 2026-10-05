@@ -10,6 +10,7 @@
     close.py repo-handoff                      write <repo>/.claude/HANDOFF.md (shared projects, leak-guarded)
     close.py session focus "<text>"            set this session's registry focus text
     close.py session refresh                   re-register this session in the live registry
+    close.py session end                       SessionEnd hook: remove this session's registry entries
 
 Always exits 0 and prints one JSON object. Design: the "Session handoff" section of the claude-wiki-engine README.
 """
@@ -463,8 +464,15 @@ def push(files, message, retries=15):
             rc, out, _ = g("ls-files", "-z", "--", r)
             return rc == 0 and out.split("\0") == [r, ""]
 
+        def in_head_as_one_file(r):
+            # A deletion already staged (`git rm`) is gone from the index but still in HEAD. -r lists blobs only,
+            # so a deleted tracked directory prints its files, never itself, and stays refused.
+            rc, out, _ = g("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", r)
+            return rc == 0 and out.split("\0") == [r, ""]
+
         # A moved/deleted file is staged as a deletion when git tracks it; a never-committed file that is gone is dropped.
-        rel = [r for r in rel if (v / r).exists() or tracked_as_one_file(r)]
+        in_index = {r for r in rel if (v / r).exists() or tracked_as_one_file(r)}
+        rel = [r for r in rel if r in in_index or in_head_as_one_file(r)]
         dropped = [r for r in asked if r not in rel]  # never merged into `missing`: /sync retries on `missing`
 
         def done(status, **extra):
@@ -494,7 +502,10 @@ def push(files, message, retries=15):
             return done("stage_failed", detail="ignored or secret-shaped files are not accepted: " + ", ".join(bad))
         if not _held(lock, token):  # a stale-breaker moved our fresh lock aside and a third waiter took the path
             return done("locked")
-        rc, out, err = g("add", "-f", "--", *rel)  # -f: NEW files under an ignored parent are silently skipped otherwise
+        # -f: NEW files under an ignored parent are silently skipped otherwise. A path only in HEAD (deletion already
+        # staged) is left out: `add` dies on a pathspec that matches nothing, and the pathspec commit takes it as is.
+        to_add = [r for r in rel if r in in_index]
+        rc, out, err = g("add", "-f", "--", *to_add) if to_add else (0, "", "")
         if rc != 0:  # all-or-nothing: one bad path stages nothing, which must not read as "nothing to commit"
             return done("stage_failed", detail=(err or out)[-300:])
         # `add` exits 0 yet stages nothing for a file inside a nested repository: verify every existing path
@@ -502,7 +513,7 @@ def push(files, message, retries=15):
         rc, out, _ = g("ls-files", "-z", "--", *existing) if existing else (0, "", "")
         unstaged = [r for r in existing if r not in set(out.split("\0"))] if rc == 0 else existing
         if unstaged:
-            staged_now = [r for r in rel if r not in unstaged]
+            staged_now = [r for r in to_add if r not in unstaged]  # never a deletion staged before this call
             if staged_now:
                 g("restore", "--staged", "--", *staged_now)
             return done("stage_failed", detail="not stageable (e.g. inside a nested repository): "
@@ -570,7 +581,21 @@ def check_profile(path):
     return {"profile_error": lib.parse_handoff(text)["profile_error"]}
 
 
+def session_end():
+    """SessionEnd hook: drop this process's registry entries. Not on /clear or /resume: the process lives on and
+    register() carries the focus over to the new session id."""
+    try:
+        hook = json.loads(sys.stdin.read() or "{}") if not sys.stdin.isatty() else {}
+    except ValueError:
+        hook = {}
+    if isinstance(hook, dict) and hook.get("reason") in ("clear", "resume"):
+        return {"ok": True, "skipped": hook["reason"]}
+    return {"ok": True, "removed": sessions.deregister()}
+
+
 def session_cmd(cwd, project, action, text):
+    if action == "end":
+        return session_end()
     ident = lib.resolve_identity(cwd, project)
     if not ident.get("key"):
         return {"ok": False, "reason": "ambiguous project; pass --project"}
@@ -602,7 +627,7 @@ def main(argv=None):
     d.add_argument("--files", nargs="+", required=True)
     sub.add_parser("repo-handoff")
     se = sub.add_parser("session")
-    se.add_argument("action", choices=["focus", "refresh"])
+    se.add_argument("action", choices=["focus", "refresh", "end"])
     se.add_argument("text", nargs="?", default="")
     a = ap.parse_args(argv)
     try:

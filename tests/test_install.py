@@ -748,3 +748,42 @@ class ReviewFixesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class SessionEndHookTest(unittest.TestCase):
+    """hooks/session-end.cjs: a no-op without the session tools; else hands stdin to `close.py session end`."""
+
+    def _config(self, with_tools):
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        (base / "hooks").mkdir()
+        shutil.copy2(REPO / "hooks" / "session-end.cjs", base / "hooks" / "session-end.cjs")
+        if with_tools:
+            tools = base / "tools" / "session"
+            tools.mkdir(parents=True)
+            (tools / "close.py").write_text(
+                "import sys, pathlib\n"
+                "pathlib.Path(__file__).with_name('called.txt').write_text("
+                "' '.join(sys.argv[1:]) + '|' + sys.stdin.read(), encoding='utf-8')\n",
+                encoding="utf-8")
+        return base
+
+    def _run(self, base, payload):
+        return subprocess.run(["node", str(base / "hooks" / "session-end.cjs")], input=payload,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_no_tools_is_a_silent_no_op(self):
+        base = self._config(with_tools=False)
+        r = self._run(base, '{"reason": "logout"}')
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_passes_hook_input_to_close_session_end(self):
+        base = self._config(with_tools=True)
+        r = self._run(base, '{"reason": "prompt_input_exit"}')
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        called = (base / "tools" / "session" / "called.txt").read_text(encoding="utf-8")
+        self.assertEqual(called, 'session end|{"reason": "prompt_input_exit"}')
+
+    def test_hook_is_registered_under_session_end(self):
+        self.assertIn(("session-end.cjs", "SessionEnd", ""), load_installer().HOOKS)
