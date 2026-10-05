@@ -1,6 +1,6 @@
 # Error Handling — session tools (`open.py` / `close.py` / `lib.py`)
 
-Last updated: 2026-09-30
+Last updated: 2026-10-04
 
 ## 1. Collector never crashes the skill
 
@@ -63,6 +63,12 @@ Last updated: 2026-09-30
 - `push` verifies the index after `add` (2026-09-28): a file inside a nested repository is silently not staged
   (`add` exits 0). Every existing listed file must be in the index, else `stage_failed` naming it, and what this
   call staged is unstaged again (`restore --staged`), so `/sync` never loops on `missing`.
+- `push` commits deletions already staged (2026-10-04, acceptance finding): a file removed with `git rm` (or the old
+  side of a `git mv`) is gone from disk AND the index, so the index-only tracked check dropped it (`stage_failed: no
+  listed file exists or is tracked`). A missing path is now also accepted when `ls-tree -r HEAD` lists exactly that
+  one file (`-r` lists blobs only, so a deleted tracked directory stays refused); such a path skips `add` (it would
+  die on an unmatched pathspec) and the pathspec commit records the deletion. Tests: `test_push_dirs.py`
+  `..._already_staged_with_git_rm` / `..._git_mv`. A path in neither HEAD nor the index is still `dropped`.
 - Stale lock (`.sync.lock`, > 300 s): broken by renaming it to `.sync.lock.stale-<pid>-<nonce>` and checking the
   renamed dir's inode + mtime still match the lock judged stale; if not (another waiter already replaced it with a
   fresh lock), it is renamed back and the wait goes on. rmdir-by-name let a second waiter delete the first one's
@@ -101,6 +107,15 @@ Last updated: 2026-09-30
   is also scanned with whitespace collapsed (a name wrapped across lines); the home directory path is always a
   needle (in `find`, not `needles`, so an empty identity still refuses). The bare user name is not a needle (too
   many false positives).
+
+## 4c. Session registry (`handoffs/.live/`)
+- Dead or week-old entries are pruned lazily by `sessions.others()` (past the 10-min `GRACE_S`), so a crashed
+  session never blocks anything; it only lingers until the next session of that project looks.
+- Clean exit deregisters (2026-10-04, acceptance finding): a `SessionEnd` hook in `settings.json` runs
+  `close.py session end`, which removes this process's (host + pid) entries in every project. On `reason: clear`
+  it does nothing: `register()` adopts the old entry to carry the focus over to the new session id. The hook output
+  goes to /dev/null and the CLI never raises (failures become `fatal` JSON), so it cannot block an exit; a missed
+  run falls back to lazy pruning.
 
 ## 5. Text encoding
 - Handling: every text read/write and text-mode subprocess names `encoding="utf-8"`. Windows defaults to cp1252,
