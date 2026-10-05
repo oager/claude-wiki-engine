@@ -561,3 +561,20 @@ def test_claim_write_failure_never_removes_another_holders_lock(tmp_path, monkey
     monkeypatch.setattr(cl.os, "fdopen", fdopen)
     assert cl._claim(lock, "t") is False
     assert (lock / cl.OWNER).read_text(encoding="utf-8") == "other 1"
+
+
+# PR #8 review: the all-or-nothing rollback must only unstage what this call staged, never a deletion the user
+# had already staged with `git rm`.
+def test_rollback_keeps_a_deletion_staged_before_push(vault, pushable):  # noqa: F811
+    (vault / "handoffs").mkdir()
+    (vault / "handoffs/old.md").write_text("x", encoding="utf-8")
+    sh("git", "add", "--", "handoffs/old.md", cwd=vault)
+    sh("git", "commit", "-qm", "add old", cwd=vault)
+    sh("git", "rm", "-q", "--", "handoffs/old.md", cwd=vault)
+    nested = vault / "memory"
+    nested.mkdir()
+    sh("git", "init", "-q", cwd=nested)
+    (nested / "a.md").write_text("page", encoding="utf-8")
+    res = cl.push([str(vault / "handoffs/old.md"), str(nested / "a.md")], "m")
+    assert res["status"] == "stage_failed"
+    assert _git(vault, "status", "--porcelain", "--", "handoffs/old.md").startswith("D ")

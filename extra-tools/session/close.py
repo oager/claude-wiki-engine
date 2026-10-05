@@ -513,7 +513,7 @@ def push(files, message, retries=15):
         rc, out, _ = g("ls-files", "-z", "--", *existing) if existing else (0, "", "")
         unstaged = [r for r in existing if r not in set(out.split("\0"))] if rc == 0 else existing
         if unstaged:
-            staged_now = [r for r in rel if r not in unstaged]
+            staged_now = [r for r in to_add if r not in unstaged]  # never a deletion staged before this call
             if staged_now:
                 g("restore", "--staged", "--", *staged_now)
             return done("stage_failed", detail="not stageable (e.g. inside a nested repository): "
@@ -582,13 +582,14 @@ def check_profile(path):
 
 
 def session_end():
-    """SessionEnd hook: drop this process's registry entries, except on /clear (register() carries the focus over)."""
+    """SessionEnd hook: drop this process's registry entries. Not on /clear or /resume: the process lives on and
+    register() carries the focus over to the new session id."""
     try:
         hook = json.loads(sys.stdin.read() or "{}") if not sys.stdin.isatty() else {}
     except ValueError:
         hook = {}
-    if isinstance(hook, dict) and hook.get("reason") == "clear":
-        return {"ok": True, "skipped": "clear"}
+    if isinstance(hook, dict) and hook.get("reason") in ("clear", "resume"):
+        return {"ok": True, "skipped": hook["reason"]}
     return {"ok": True, "removed": sessions.deregister()}
 
 

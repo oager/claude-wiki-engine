@@ -262,7 +262,8 @@ def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
     assert p.exists()
 
 
-@pytest.mark.parametrize("reason,removed", [("clear", False), ("prompt_input_exit", True), ("logout", True)])
+@pytest.mark.parametrize("reason,removed", [("clear", False), ("resume", False), ("prompt_input_exit", True),
+                                            ("logout", True), ("other", True)])
 def test_session_end_cli_keeps_entry_on_clear(vault, me_env, monkeypatch, capsys, reason, removed):
     import io
 

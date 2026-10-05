@@ -112,10 +112,13 @@ Last updated: 2026-10-04
 - Dead or week-old entries are pruned lazily by `sessions.others()` (past the 10-min `GRACE_S`), so a crashed
   session never blocks anything; it only lingers until the next session of that project looks.
 - Clean exit deregisters (2026-10-04, acceptance finding): a `SessionEnd` hook in `settings.json` runs
-  `close.py session end`, which removes this process's (host + pid) entries in every project. On `reason: clear`
-  it does nothing: `register()` adopts the old entry to carry the focus over to the new session id. The hook output
-  goes to /dev/null and the CLI never raises (failures become `fatal` JSON), so it cannot block an exit; a missed
-  run falls back to lazy pruning.
+  `close.py session end`, which removes this process's (host + pid) entries in every project. On `reason: clear` or
+  `resume` it does nothing: the process lives on and `register()` adopts the old entry to carry the focus over to the
+  new session id. The hook output goes to /dev/null and the CLI never raises (failures become `fatal` JSON), so it
+  cannot block an exit. Claude Code kills SessionEnd hooks after 1.5 s by default
+  (`CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`); a killed or missed run falls back to lazy pruning.
+- A failed stage (`stage_failed` after `add`) unstages only what that call added: a deletion the user had staged
+  with `git rm` before the push stays staged (PR #8 review).
 
 ## 5. Text encoding
 - Handling: every text read/write and text-mode subprocess names `encoding="utf-8"`. Windows defaults to cp1252,

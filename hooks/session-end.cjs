@@ -2,9 +2,11 @@
 /*
  * SessionEnd hook for the claude-wiki-engine session tools.
  * On a clean exit, removes this session's entry from the live registry (handoffs/.live/) so other sessions stop
- * listing it under "Also open here". On /clear it does nothing (close.py keeps the entry so the focus carries over).
- * No-op when the session tools are not installed. Never blocks the exit: every failure is swallowed, and a missed
- * run only means the entry is pruned lazily by the next session of that project.
+ * listing it under "Also open here". On /clear or /resume it does nothing (the process lives on; close.py keeps the
+ * entry so the focus carries over). No-op when the session tools are not installed. Never blocks the exit: every
+ * failure is swallowed. Claude Code kills SessionEnd hooks after 1.5 s by default
+ * (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS); a killed or missed run only means the entry is pruned lazily by the
+ * next session of that project.
  * install.py copies this to <config>/hooks/ and registers it in settings.json (SessionEnd).
  */
 const fs = require('fs');
