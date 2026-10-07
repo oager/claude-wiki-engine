@@ -74,7 +74,7 @@ they keep in the repo. Summarize what changed under you.
 - A port-serving process is alive when its port is (a `port` check), not when `pgrep` finds it.
 - `global.user.profile_error` set: `User profile broken: <error>` on the Health line; user checks were skipped.
 - `sessions.others` non-empty: `⚠ Also open here: N session(s) — <id> (<focus or "no focus">), …` on the Health line
-  (show `<id>/<pid>` when an id equals `sessions.me`: a fork keeps its parent's id).
+  (show `<id>/<pid>` when an id equals `sessions.me`: a fork may keep its parent's id; a desktop Code-tab fork gets its own).
   `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`.
   `sessions.focus` empty AND (`sessions.others` non-empty OR the user's first request names a clear topic): take a
   one-line focus from that request (or ask for one) and run
