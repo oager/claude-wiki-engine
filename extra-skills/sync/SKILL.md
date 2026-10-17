@@ -38,7 +38,7 @@ Re-read the handoff's `updated` immediately before writing it; if it changed sin
 session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
 (`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
 is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first, then set the focus.
-When naming another session, show `<id>/<pid>` when two ids match (a fork keeps its parent's id).
+When naming another session, show `<id>/<pid>` when two ids match (a fork may keep its parent's id; a desktop Code-tab fork gets its own).
 
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
 it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and
