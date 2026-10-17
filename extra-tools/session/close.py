@@ -408,6 +408,48 @@ def acquire_lock(lock, token, retries=15, wait=2):
     return False
 
 
+def _git_spelling(rel, tracked):
+    """Respell each vault-relative path in the case git tracks it (or its folder) under.
+
+    Longest tracked prefix wins, so a NEW file joins the tracked folder instead of committing a
+    second-cased twin of it. A path with nothing tracked under it is left as given.
+    """
+    known = {}
+    for t in tracked:
+        parts = t.split("/")
+        for i in range(1, len(parts) + 1):
+            p = "/".join(parts[:i])
+            if p:
+                known.setdefault(p.casefold(), p)
+    out = []
+    for r in rel:
+        parts = r.split("/")
+        for i in range(len(parts), 0, -1):
+            p = "/".join(parts[:i])
+            hit = known.get(p.casefold())
+            if hit is not None:
+                out.append(hit + r[len(p):])
+                break
+        else:
+            out.append(r)
+    return out
+
+
+def _changed_vs_head(g, paths):
+    """Listed files whose content differs from HEAD, judged by blob id (no pathspec case involved)."""
+    rc, out, _ = g("hash-object", "--", *paths)
+    disk = out.split() if rc == 0 else []
+    if len(disk) != len(paths):  # cannot tell: report them all rather than pass a failed stage as "nothing"
+        return list(paths)
+    rc, out, _ = g("ls-tree", "-z", "HEAD", "--", *paths)
+    head = {}
+    for entry in out.split("\0") if rc == 0 else []:
+        if "\t" in entry:
+            meta, name = entry.split("\t", 1)
+            head[name] = meta.split()[2]
+    return [p for p, h in zip(paths, disk) if head.get(p) != h]
+
+
 def push(files, message, retries=15):
     """Concurrency-safe vault push: mkdir lock, stage ONLY `files`, pathspec commit, rebase, push, verify.
 
@@ -439,6 +481,14 @@ def push(files, message, retries=15):
                 outside.append(f)
         if outside:
             return {"status": "stage_failed", "detail": "outside the vault: " + ", ".join(outside)}
+        if g("config", "--bool", "core.ignorecase")[1].strip() == "true":
+            # Case-insensitive checkout (Windows, macOS): resolve() returns the ON-DISK case
+            # (projects/C--Users-x-Claude-Workspaces) while git may track another (...-claude-workspaces), and
+            # git pathspecs are case-sensitive, so add/diff matched nothing and push said "nothing". resolve()
+            # stays for the containment check above; the pathspecs use git's own spelling.
+            rc, out, _ = g("ls-files", "-z")
+            if rc == 0:
+                resolved = _git_spelling(resolved, out.split("\0"))
         rel = asked = resolved
         # Security: a directory (especially the vault root) would silently commit ignored files
         # (.credentials.json, projects/**) and other sessions' half-writes. push accepts files only.
@@ -523,6 +573,13 @@ def push(files, message, retries=15):
             return [r for r in rel if (v / r).exists() and g("cat-file", "-e", f"HEAD:{r}")[0] != 0]
 
         new = g("diff", "--cached", "--quiet", "--", *rel)[0] != 0
+        if not new and existing:
+            # Backstop: every check above goes through a pathspec, so a path git does not know under this
+            # spelling stages nothing and reads as "nothing to commit". Content comparison does not.
+            changed = _changed_vs_head(g, existing)
+            if changed:
+                return done("stage_failed", detail="changed on disk but nothing was staged (path case or "
+                            "spelling differs from what git tracks?): " + ", ".join(changed))
         if new:
             rc, out, err = g("commit", "-q", "-m", message, "--", *rel)  # pathspec commit: others' staged files stay out
             if rc != 0:
