@@ -108,6 +108,12 @@ def _unlink(p):
         pass
 
 
+def _read_live(p):
+    """An entry's data, or None when it is unreadable or ended (an ended entry is never anyone's live state)."""
+    data = _read(p) if p else None
+    return None if data is None or "ended" in data else data
+
+
 def _end(p, data, by):
     """Mark an entry ended ("exit": SessionEnd hook, "prune": others() found it dead or expired): never listed again,
     adoptable for ADOPT_S. Deleted when it cannot be rewritten."""
@@ -172,6 +178,13 @@ def register(key, root, updated_seen, focus=None, adopt_recent=False):
         host = socket.gethostname()
         own = _own_entries(d, m[1], host)  # this process, LIVE only: current id or one it had before a /clear
         adopted = None if own else _adoptable(d, m[0], host, adopt_recent)
+        if adopted and adopted[0] != p:  # claim it first (a concurrent refresh may race us); at p it is rewritten
+            try:
+                adopted[0].unlink()
+            except FileNotFoundError:
+                adopted = None  # the other session claimed it
+            except OSError:
+                pass  # held open (Windows): adopt anyway, others() deletes it after ADOPT_S
         old = own[0][1] if own else adopted[1] if adopted else {}
         now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%MZ")
         _write(p, {"session_id": m[0], "pid": m[1], "host": host,
@@ -181,8 +194,6 @@ def register(key, root, updated_seen, focus=None, adopt_recent=False):
         for q in _own_pid_files(d, m[1], host):  # older ids AND stale (pid-reused) files: one entry per process
             if q != p:
                 _unlink(q)
-        if adopted:
-            _unlink(adopted[0])
     except OSError as e:
         return {"registered": False, "reason": f"registry not writable: {e}"[:160]}
     res = {"registered": True, "path": str(p)}
@@ -211,7 +222,7 @@ def deregister():
 
 def set_focus(key, text):
     p = _mine_path(key)
-    data = _read(p) if p else None
+    data = _read_live(p)
     if data is None:
         return {"ok": False, "reason": "not registered; run /preflight first"}
     data["focus"] = " ".join(str(text).split())[:120]
@@ -224,8 +235,7 @@ def set_focus(key, text):
 
 def own(key):
     """This session's registry entry (dict), or None when it is not registered."""
-    p = _mine_path(key)
-    return _read(p) if p else None
+    return _read_live(_mine_path(key))
 
 
 def seen(key):

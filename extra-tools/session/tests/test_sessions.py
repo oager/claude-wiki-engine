@@ -381,6 +381,36 @@ def test_own_pid_ended_entry_is_not_read_as_own_state(vault, me_env):
     assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
 
 
+@pytest.mark.parametrize("by", ["prune", "exit"])
+def test_own_id_and_pid_ended_entry_is_revived_not_deleted(vault, me_env, by):
+    """Review of #11: same id AND pid (others() pruned a long-lived entry; or a non-clear SessionEnd on a process that
+    lives on). It is never read as live state, and register() must not delete the entry it just rewrote."""
+    p = _ended(vault, "aaaa1111-bbbb", 4242, 30, by=by, focus="lane")
+    assert p == _mine(vault)
+    assert sessions.own(KEY) is None and sessions.seen(KEY) is None
+    assert sessions.set_focus(KEY, "new")["ok"] is False
+    res = sessions.register(KEY, "/x", "u")
+    assert res["registered"] is True and p.exists()
+    data = json.loads(p.read_text(encoding="utf-8"))
+    assert data["focus"] == "lane" and "ended" not in data and "ended_by" not in data
+    assert sessions.own(KEY)["focus"] == "lane"
+
+
+def test_concurrent_refresh_claims_an_ended_entry_once(vault, me_env, monkeypatch):
+    """Two cleared sessions running refresh at once: only the one whose claim (unlink) succeeds adopts."""
+    old = _ended(vault, "old-id", 77, 30, focus="lane")
+    real = sessions._adoptable
+
+    def raced(*a):
+        found = real(*a)
+        old.unlink()  # the other session claimed it between the scan and the claim
+        return found
+    monkeypatch.setattr(sessions, "_adoptable", raced)
+    res = sessions.register(KEY, "/x", "u", adopt_recent=True)
+    assert res["registered"] is True and "adopted" not in res
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
+
+
 def test_session_refresh_cli_adopts_after_code_tab_clear(vault, me_env, monkeypatch, capsys, tmp_path):
     import close as cl
     monkeypatch.setattr(cl.lib, "resolve_identity", lambda cwd, project: {"key": KEY, "root": str(tmp_path)})
