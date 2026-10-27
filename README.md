@@ -40,7 +40,7 @@ python3 install.py --update                       # re-pull engine + re-copy ITS
   (an existing skill may come from a plugin like **ECC** or be your own; the installer won't overwrite it).
 - `hooks/wiki-index-check.cjs` (`PostToolUse`, non-blocking "this page isn't in MEMORY.md" reminder),
   `hooks/wiki-sync-nudge.cjs` (`Stop`, a once-per-session nudge to run `/wiki-sync` before wrapping
-  up) and `hooks/session-end.cjs` (`SessionEnd`, removes the session's live-registry entry on exit; a no-op
+  up) and `hooks/session-end.cjs` (`SessionEnd`, marks the session's live-registry entry ended on exit; a no-op
   without the session tools) → `<config>/hooks/` + entries in `<config>/settings.json` — **merged idempotently, backed up,
   all other keys preserved**.
 - `schema.md`, `overview.md`, `MEMORY.md`, `log.md` + `sources/ entities/ concepts/ synthesis/ raw/ raw/archive/`

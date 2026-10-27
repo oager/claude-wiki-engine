@@ -18,6 +18,7 @@ import procs
 
 EXPIRE_S = 7 * 86400  # an entry not rewritten for a week is stale whatever its pid says
 GRACE_S = 600  # never delete an entry written in the last 10 minutes (a slow probe must not erase a new session)
+ADOPT_S = 12 * 3600  # an ended entry stays adoptable this long (see _adoptable), then others() deletes it
 
 
 def me():
@@ -41,7 +42,7 @@ def _own_entries(d, pid, host):
     found = []
     for p in d.glob(f"*-{pid}.json") if d.is_dir() else []:
         data = None if p.name.startswith(".") else _read(p)
-        if data and data.get("host") == host and data.get("pid") == pid:
+        if data and data.get("host") == host and data.get("pid") == pid and "ended" not in data:
             try:
                 mtime = p.stat().st_mtime
             except OSError:
@@ -107,6 +108,44 @@ def _unlink(p):
         pass
 
 
+def _end(p, data, by):
+    """Mark an entry ended ("exit": SessionEnd hook, "prune": others() found it dead or expired): never listed again,
+    adoptable for ADOPT_S. Deleted when it cannot be rewritten."""
+    data["ended"], data["ended_by"] = int(time.time()), by
+    try:
+        _write(p, data)
+    except OSError:
+        _unlink(p)
+
+
+def _recently_ended(data):
+    e = data.get("ended")
+    return isinstance(e, (int, float)) and not isinstance(e, bool) and time.time() - e < ADOPT_S
+
+
+def _adoptable(d, sid, host, any_id):
+    """(path, data) of an entry a session with no entry of its own may take over, or None.
+
+    The desktop Code tab breaks the (host, pid) identity two ways (Windows hook log, 2026-10-27): it restarts a
+    long-lived session under the SAME id with a new pid, and on /clear it starts a NEW id AND pid while SessionEnd
+    sends reason "other", the same as an archive. The same id whose process is gone is unambiguous: always adopted.
+    Any other id (any_id) only from `session refresh`, i.e. a session that skipped /preflight, which is what a
+    cleared one is: the newest entry of this host ended in the last ADOPT_S. /preflight never takes that path, so a
+    new session opened right after an archive does not inherit the archived session's focus."""
+    best = None
+    for p in d.glob("*.json") if d.is_dir() else []:
+        data = None if p.name.startswith(".") else _read(p)
+        if not data or data.get("host") != host:
+            continue
+        recent = _recently_ended(data)
+        if data.get("session_id") == sid and (recent or alive_name(data.get("pid"))[0] is False):
+            return p, data
+        # only an exit: a pruned entry's process may have died days before others() saw it
+        if any_id and recent and data.get("ended_by") == "exit" and (best is None or data["ended"] > best[1]["ended"]):
+            best = (p, data)
+    return best
+
+
 def _should_delete(p):
     """Return True if file is old enough to delete (past grace period)."""
     try:
@@ -116,7 +155,7 @@ def _should_delete(p):
         return False
 
 
-def register(key, root, updated_seen, focus=None):
+def register(key, root, updated_seen, focus=None, adopt_recent=False):
     try:
         d = live_dir(key)
     except ValueError:
@@ -132,7 +171,8 @@ def register(key, root, updated_seen, focus=None):
             gi.write_text("*\n", encoding="utf-8")
         host = socket.gethostname()
         own = _own_entries(d, m[1], host)  # this process, LIVE only: current id or one it had before a /clear
-        old = own[0][1] if own else {}
+        adopted = None if own else _adoptable(d, m[0], host, adopt_recent)
+        old = own[0][1] if own else adopted[1] if adopted else {}
         now = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%MZ")
         _write(p, {"session_id": m[0], "pid": m[1], "host": host,
                    "started": old.get("started") or now, "updated_seen": updated_seen,
@@ -141,13 +181,19 @@ def register(key, root, updated_seen, focus=None):
         for q in _own_pid_files(d, m[1], host):  # older ids AND stale (pid-reused) files: one entry per process
             if q != p:
                 _unlink(q)
+        if adopted:
+            _unlink(adopted[0])
     except OSError as e:
         return {"registered": False, "reason": f"registry not writable: {e}"[:160]}
-    return {"registered": True, "path": str(p)}
+    res = {"registered": True, "path": str(p)}
+    if adopted:
+        res["adopted"] = str(old.get("session_id", ""))[:64]
+    return res
 
 
 def deregister():
-    """Remove this process's entries from every project (SessionEnd hook). Returns the paths removed."""
+    """Mark this process's entries ended in every project (SessionEnd hook). Ended entries are never listed; they
+    stay adoptable for ADOPT_S (a Code-tab /clear ends the process). Returns the paths marked."""
     m = me()
     base = lib.vault() / "handoffs" / ".live"
     if m is None or not base.is_dir():
@@ -156,8 +202,10 @@ def deregister():
     for d in sorted(base.iterdir()):
         if d.is_dir():
             for p in _own_pid_files(d, m[1], host):
-                _unlink(p)
-                gone.append(str(p))
+                data = _read(p)
+                if data is not None and "ended" not in data:
+                    _end(p, data, "exit")
+                    gone.append(str(p))
     return gone
 
 
@@ -186,7 +234,8 @@ def seen(key):
 
 
 def others(key):
-    """Other live sessions of this project on this machine; removes dead or expired entries past the grace period."""
+    """Other live sessions of this project on this machine. Dead or expired entries past the grace period are marked
+    ended; ended entries are never listed and are deleted after ADOPT_S."""
     try:
         d = live_dir(key)
     except ValueError:
@@ -207,12 +256,16 @@ def others(key):
             continue
         if data.get("host") != host:
             continue  # another machine's entry in a shared folder: not ours to judge
+        if "ended" in data:
+            if not _recently_ended(data):
+                _unlink(p)
+            continue
         if m and data.get("pid") == m[1]:
             continue  # this process under an id it had before a /clear
         alive, name = alive_name(data.get("pid"))
         if not (alive is True and name and procs.is_claude(name) and age < EXPIRE_S):
             if _should_delete(p):
-                _unlink(p)
+                _end(p, data, "prune")
             continue
         out.append({"id": str(data.get("session_id", ""))[:8], "pid": data["pid"], "focus": data.get("focus") or "",
                     "started": data.get("started"), "updated_seen": data.get("updated_seen"),

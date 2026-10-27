@@ -94,12 +94,13 @@ def test_fork_same_id_other_pid_is_listed(vault, me_env, monkeypatch):
     assert [o["pid"] for o in sessions.others(KEY)] == [901]
 
 
-def test_dead_old_entry_is_deleted_young_one_kept(vault, monkeypatch):
+def test_dead_old_entry_is_ended_young_one_kept(vault, monkeypatch):
     old = _entry(vault, "d1", 910, age_s=3600)
     young = _entry(vault, "d2", 911)
     _alive(monkeypatch, {})
     assert sessions.others(KEY) == []
-    assert not old.exists() and young.exists()
+    assert "ended" in json.loads(old.read_text(encoding="utf-8"))  # kept, adoptable (Code-tab respawn), never listed
+    assert "ended" not in json.loads(young.read_text(encoding="utf-8"))
 
 
 def test_unknown_liveness_is_not_listed_and_kept_in_grace(vault, monkeypatch):
@@ -111,7 +112,7 @@ def test_unknown_liveness_is_not_listed_and_kept_in_grace(vault, monkeypatch):
 def test_non_claude_process_is_dead(vault, monkeypatch):
     p = _entry(vault, "f1", 930, age_s=3600)
     _alive(monkeypatch, {930: (True, "nginx")})
-    assert sessions.others(KEY) == [] and not p.exists()
+    assert sessions.others(KEY) == [] and "ended" in json.loads(p.read_text(encoding="utf-8"))
 
 
 def test_other_host_ignored_not_deleted(vault, monkeypatch):
@@ -120,10 +121,10 @@ def test_other_host_ignored_not_deleted(vault, monkeypatch):
     assert sessions.others(KEY) == [] and p.exists()
 
 
-def test_expired_entry_removed_even_if_alive(vault, monkeypatch):
+def test_expired_entry_ended_even_if_alive(vault, monkeypatch):
     p = _entry(vault, "h1", 950, age_s=8 * 86400)
     _alive(monkeypatch, {950: CLAUDE})
-    assert sessions.others(KEY) == [] and not p.exists()
+    assert sessions.others(KEY) == [] and "ended" in json.loads(p.read_text(encoding="utf-8"))
 
 
 def test_corrupt_entry_old_deleted_young_kept(vault, monkeypatch):
@@ -231,15 +232,16 @@ def test_tmp_file_ignored_and_not_deleted(vault, me_env, monkeypatch):
     assert sessions.others(KEY) == [] and tmp.exists()
 
 
-def test_unknown_liveness_past_grace_deleted(vault, monkeypatch):
+def test_unknown_liveness_past_grace_ended(vault, monkeypatch):
     p = _entry(vault, "u1", 999, age_s=GRACE_S + 1)
     _alive(monkeypatch, {999: (None, None)})
-    assert sessions.others(KEY) == [] and not p.exists()
+    assert sessions.others(KEY) == [] and "ended" in json.loads(p.read_text(encoding="utf-8"))
 
 
 # Acceptance finding 2026-10-04: a clean /exit left its registry entry behind (only lazily pruned by a later
-# session of the same project). SessionEnd now runs `close.py session end`, which removes this process's entries.
-def test_deregister_removes_own_entries_in_every_project(vault, me_env):
+# session of the same project). SessionEnd now runs `close.py session end`, which marks this process's entries ended
+# (never listed again; adoptable for ADOPT_S, see the Code-tab tests below).
+def test_deregister_ends_own_entries_in_every_project(vault, me_env):
     mine = _mine(vault)
     _entry(vault, "aaaa1111-bbbb", 4242)
     other_dir = vault / "handoffs/.live/other-key"
@@ -250,8 +252,9 @@ def test_deregister_removes_own_entries_in_every_project(vault, me_env):
     keep_host = _entry(vault, "dddd", 4242, host="another-box")
     gone = sessions.deregister()
     assert sorted(gone) == sorted([str(mine), str(old_id)])
-    assert not mine.exists() and not old_id.exists()
-    assert keep_pid.exists() and keep_host.exists()
+    assert all("ended" in json.loads(p.read_text(encoding="utf-8")) for p in (mine, old_id))
+    for p in (keep_pid, keep_host):
+        assert "ended" not in json.loads(p.read_text(encoding="utf-8"))
 
 
 def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
@@ -262,9 +265,9 @@ def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
     assert p.exists()
 
 
-@pytest.mark.parametrize("reason,removed", [("clear", False), ("resume", False), ("prompt_input_exit", True),
-                                            ("logout", True), ("other", True)])
-def test_session_end_cli_keeps_entry_on_clear(vault, me_env, monkeypatch, capsys, reason, removed):
+@pytest.mark.parametrize("reason,ended", [("clear", False), ("resume", False), ("prompt_input_exit", True),
+                                          ("logout", True), ("other", True)])
+def test_session_end_cli_keeps_entry_on_clear(vault, me_env, monkeypatch, capsys, reason, ended):
     import io
 
     import close as cl
@@ -273,4 +276,115 @@ def test_session_end_cli_keeps_entry_on_clear(vault, me_env, monkeypatch, capsys
     cl.main(["session", "end"])
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True
-    assert p.exists() is not removed  # /clear keeps it: register() carries the focus over to the new id
+    # /clear keeps it live: register() carries the focus over to the new id. Any other end marks it ended.
+    assert ("ended" in json.loads(p.read_text(encoding="utf-8"))) is ended
+
+
+# Pass 3 follow-up, 2026-10-27 (Windows desktop Code tab, hook log): /clear sends SessionEnd reason "other" (the same
+# as an archive) and the new process starts with source "startup", a NEW session id and a NEW pid. The Code tab also
+# restarts a long-lived session under the SAME id with a new pid. Nothing in the hook payload links old and new.
+def _ended(vault, sid, pid, ago_s, by="exit", **kw):
+    return _entry(vault, sid, pid, ended=int(time.time() - ago_s), ended_by=by, **kw)
+
+
+def test_ended_entry_is_not_listed(vault, me_env, monkeypatch):
+    sessions.register(KEY, "/x", "u")
+    p = _ended(vault, "cccc2222", 900, 60)
+    _alive(monkeypatch, {900: CLAUDE})
+    assert sessions.others(KEY) == [] and p.exists()
+
+
+def test_ended_entry_past_adopt_window_is_deleted(vault, monkeypatch):
+    p = _ended(vault, "cccc2222", 900, sessions.ADOPT_S + 60)
+    _alive(monkeypatch, {})
+    assert sessions.others(KEY) == [] and not p.exists()
+
+
+def test_refresh_adopts_recent_ended_entry_after_code_tab_clear(vault, me_env):
+    old = _ended(vault, "old-id", 77, 30, focus="trading: marketscan", started="2026-10-27T20:00Z")
+    res = sessions.register(KEY, "/x", "u", adopt_recent=True)
+    assert res["registered"] is True and res["adopted"] == "old-id"
+    data = json.loads(_mine(vault).read_text(encoding="utf-8"))
+    assert (data["focus"], data["started"], data["updated_seen"]) == ("trading: marketscan", "2026-10-27T20:00Z", "u")
+    assert "ended" not in data and not old.exists()
+
+
+def test_refresh_adopts_the_newest_ended_entry(vault, me_env):
+    _ended(vault, "older", 70, 600, focus="a")
+    _ended(vault, "newer", 71, 30, focus="b")
+    assert sessions.register(KEY, "/x", "u", adopt_recent=True)["adopted"] == "newer"
+
+
+def test_preflight_register_never_adopts_another_ids_ended_entry(vault, me_env):
+    """A new session's /preflight right after an archive must not inherit the archived session's focus."""
+    old = _ended(vault, "old-id", 77, 30, focus="x")
+    res = sessions.register(KEY, "/x", "u")
+    assert "adopted" not in res and old.exists()
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
+
+
+def test_refresh_ignores_ended_entries_past_window_and_other_hosts(vault, me_env):
+    _ended(vault, "stale", 70, sessions.ADOPT_S + 60, focus="a")
+    _ended(vault, "far", 71, 30, focus="b", host="another-box")
+    res = sessions.register(KEY, "/x", "u", adopt_recent=True)
+    assert "adopted" not in res
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
+
+
+def test_refresh_never_adopts_another_ids_pruned_entry(vault, me_env, monkeypatch):
+    """others() marks a dead entry ended when it first SEES it dead, maybe days after the process died."""
+    old = _entry(vault, "crashed", 77, age_s=3 * 86400, focus="stale")
+    _alive(monkeypatch, {})
+    sessions.others(KEY)
+    assert json.loads(old.read_text(encoding="utf-8"))["ended_by"] == "prune"
+    assert "adopted" not in sessions.register(KEY, "/x", "u", adopt_recent=True) and old.exists()
+
+
+def test_session_end_marks_exit(vault, me_env):
+    p = _entry(vault, "aaaa1111-bbbb", 4242)
+    sessions.deregister()
+    assert json.loads(p.read_text(encoding="utf-8"))["ended_by"] == "exit"
+
+
+def test_registered_session_never_adopts(vault, me_env):
+    sessions.register(KEY, "/x", "u")
+    sessions.set_focus(KEY, "mine")
+    old = _ended(vault, "old-id", 77, 30, focus="theirs")
+    assert "adopted" not in sessions.register(KEY, "/x", "u", adopt_recent=True)
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == "mine" and old.exists()
+
+
+@pytest.mark.parametrize("ended_ago", [None, 30])
+def test_register_adopts_own_session_id_after_code_tab_respawn(vault, me_env, monkeypatch, ended_ago):
+    """Same id, new pid, old pid gone: unambiguous, so /preflight adopts it too."""
+    kw = {"ended": int(time.time() - ended_ago)} if ended_ago else {}
+    old = _entry(vault, "aaaa1111-bbbb", 63740, focus="trading", started="2026-10-26T18:53Z", **kw)
+    _alive(monkeypatch, {})
+    res = sessions.register(KEY, "/x", "u")
+    assert res["adopted"] == "aaaa1111-bbbb" and not old.exists()
+    data = json.loads(_mine(vault).read_text(encoding="utf-8"))
+    assert (data["focus"], data["started"]) == ("trading", "2026-10-26T18:53Z")
+
+
+def test_register_never_adopts_a_live_fork_with_the_same_id(vault, me_env, monkeypatch):
+    fork = _entry(vault, "aaaa1111-bbbb", 901, focus="fork lane")
+    _alive(monkeypatch, {901: CLAUDE})
+    assert "adopted" not in sessions.register(KEY, "/x", "u", adopt_recent=True)
+    assert fork.exists() and json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
+
+
+def test_own_pid_ended_entry_is_not_read_as_own_state(vault, me_env):
+    """An ended entry under this pid is a finished process whose pid the OS reused, never this process."""
+    _ended(vault, "gone", 4242, 30, focus="old")
+    assert sessions.seen(KEY) is None
+    sessions.register(KEY, "/x", "u")
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == ""
+
+
+def test_session_refresh_cli_adopts_after_code_tab_clear(vault, me_env, monkeypatch, capsys, tmp_path):
+    import close as cl
+    monkeypatch.setattr(cl.lib, "resolve_identity", lambda cwd, project: {"key": KEY, "root": str(tmp_path)})
+    _ended(vault, "old-id", 77, 30, focus="lane")
+    cl.main(["session", "refresh"])
+    assert json.loads(capsys.readouterr().out)["adopted"] == "old-id"
+    assert json.loads(_mine(vault).read_text(encoding="utf-8"))["focus"] == "lane"
