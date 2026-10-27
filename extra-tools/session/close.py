@@ -639,15 +639,16 @@ def check_profile(path):
 
 
 def session_end():
-    """SessionEnd hook: drop this process's registry entries. Not on /clear or /resume: the process lives on and
-    register() carries the focus over to the new session id."""
+    """SessionEnd hook: mark this process's registry entries ended. Not on /clear or /resume: the process lives on and
+    register() carries the focus over to the new session id. (The desktop Code tab sends "other" on /clear and starts
+    a new process; `session refresh` adopts the ended entry, see sessions._adoptable.)"""
     try:
         hook = json.loads(sys.stdin.read() or "{}") if not sys.stdin.isatty() else {}
     except ValueError:
         hook = {}
     if isinstance(hook, dict) and hook.get("reason") in ("clear", "resume"):
         return {"ok": True, "skipped": hook["reason"]}
-    return {"ok": True, "removed": sessions.deregister()}
+    return {"ok": True, "ended": sessions.deregister()}
 
 
 def session_cmd(cwd, project, action, text):
@@ -660,7 +661,7 @@ def session_cmd(cwd, project, action, text):
         return sessions.set_focus(ident["key"], text)
     p = lib.handoff_path(ident["key"])
     updated = lib.parse_handoff(p.read_text(encoding="utf-8"))["meta"].get("updated") if p.is_file() else None
-    return sessions.register(ident["key"], ident["root"], updated)
+    return sessions.register(ident["key"], ident["root"], updated, adopt_recent=True)
 
 
 def main(argv=None):

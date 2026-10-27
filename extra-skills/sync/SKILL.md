@@ -37,7 +37,9 @@ Re-read the handoff's `updated` immediately before writing it; if it changed sin
 **Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
 session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
 (`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
-is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first, then set the focus.
+is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first (it prints `adopted: <id>`
+when it took over the entry a desktop Code-tab `/clear` left behind: say `focus carried over from <id8>` in the report),
+then set the focus if it is still empty.
 When naming another session, show `<id>/<pid>` when two ids match (a fork may keep its parent's id; a desktop Code-tab fork gets its own).
 
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
