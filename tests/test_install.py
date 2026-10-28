@@ -67,6 +67,51 @@ class MergeHookBackupTest(unittest.TestCase):
         self.assertIn("PostToolUse", hooks)
         self.assertIn("Stop", hooks)
 
+    def wire(self, command):
+        self.settings.write_text(json.dumps({"hooks": {"PostToolUse": [{"matcher": "Write|Edit", "hooks": [
+            {"type": "command", "command": command}]}]}}, indent=4), encoding="utf-8")
+
+    # Rich's install (2026-10-28): his hook ran from his own tracked config path; --update repointed it and
+    # re-dumped his settings.json. A working command is the owner's choice: leave the file byte-identical.
+    def test_working_hook_elsewhere_is_left_alone(self):
+        mine = self.tmp / "elsewhere/wiki-index.cjs"
+        mine.parent.mkdir()
+        mine.write_text("//", encoding="utf-8")
+        self.wire(f"node {mine.as_posix()}")
+        before = self.settings.read_bytes()
+        self.installer.merge_hook(self.settings, "node /x/wiki-index.cjs", "PostToolUse", "Write|Edit")
+        self.assertEqual(self.settings.read_bytes(), before)
+
+    def test_broken_hook_is_repaired(self):
+        for old in ("node /gone/wiki-index.cjs", "node C:\\Users\\me\\.claude\\hooks\\wiki-index.cjs"):
+            with self.subTest(old=old):
+                self.wire(old)
+                self.installer.merge_hook(self.settings, "node /x/wiki-index.cjs", "PostToolUse", "Write|Edit")
+                cmds = [h["command"] for e in self.live()["hooks"]["PostToolUse"] for h in e["hooks"]]
+                self.assertEqual(cmds, ["node /x/wiki-index.cjs"])
+
+    def test_update_notes_and_skips_a_working_hook_elsewhere(self):
+        inst, base = self.installer, self.tmp / "cfg"
+        hf = inst.HOOKS[0][0]
+        mine = self.tmp / "elsewhere" / hf
+        mine.parent.mkdir()
+        mine.write_text("//", encoding="utf-8")
+        base.mkdir()
+        sp = base / "settings.json"
+        sp.write_text(json.dumps({"hooks": {inst.HOOKS[0][1]: [{"hooks": [
+            {"type": "command", "command": f"node {mine.as_posix()}"}]}]}}), encoding="utf-8")
+        cfg = {"dry_run": False, "config_base": base, "mode": "copy", "memory": base / "memory",
+               "content_repo": None, "claude_md": False, "skills": [], "force_skills": False, "hooks": True,
+               "extra_skills": [], "no_pull": True, "yes": True}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            inst.do_update(cfg)
+        cmds = [h["command"] for e in json.loads(sp.read_text(encoding="utf-8"))["hooks"][inst.HOOKS[0][1]]
+                for h in e["hooks"]]
+        self.assertEqual(cmds, [f"node {mine.as_posix()}"])  # the engine's other hooks may still be added
+        self.assertFalse((base / "hooks" / hf).exists())
+        self.assertIn(str(mine.as_posix()), out.getvalue().replace("\\", "/"))
+
     def test_unrelated_settings_preserved(self):
         self.wire_two_hooks()
         live = self.live()
@@ -293,6 +338,29 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertEqual((self.skills / "sync/SKILL.md").read_text(encoding="utf-8"), USER_SYNC)
 
     # --- fix 1: never wire the session system to the user's own /sync or /preflight ---
+
+    # Rich's install (2026-10-28): his /preflight and /sync are slash commands in commands/, not skills.
+    def test_install_with_own_sync_command_does_not_wire_session(self):
+        (self.tmp / "commands").mkdir()
+        (self.tmp / "commands/sync.md").write_text("mine\n", encoding="utf-8")
+        plan = self.inst.build_plan(self.cfg())
+        plan.execute()
+        self.assertFalse((self.tmp / "tools/session").exists())
+        self.assertFalse((self.skills / "preflight").exists() or (self.skills / "sync").exists())
+        self.assertNotIn(self.inst.SESSION_START, self.claude_md())
+        self.assertTrue(any("commands/sync.md" in n and "as a whole" in n for n in plan.notes), plan.notes)
+
+    def test_update_with_own_preflight_command_does_not_refresh_session(self):
+        (self.skills / "preflight").mkdir(parents=True)
+        legacy = (REPO / "tests/fixtures/legacy-701848e-preflight-SKILL.md").read_bytes()
+        (self.skills / "preflight/SKILL.md").write_bytes(legacy)
+        (self.tmp / "commands").mkdir()
+        (self.tmp / "commands/preflight.md").write_text("mine\n", encoding="utf-8")
+        out = self.update()
+        self.assertEqual((self.skills / "preflight/SKILL.md").read_bytes(), legacy)
+        self.assertFalse((self.tmp / "tools/session").exists())
+        self.assertIn("commands/preflight.md", out)
+
 
     def test_install_with_own_sync_does_not_wire_session(self):
         self.own_sync()

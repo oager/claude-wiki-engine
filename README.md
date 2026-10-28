@@ -117,10 +117,12 @@ auto-update with the repo.
   treated as yours and skipped. To swap one for the engine's: move it out of `skills/` (rename or delete it), then run
   `python install.py` (plus `--extras <name>` for an extra, e.g. `--extras preflight,sync`; components already present
   are skipped).
-- **Your own `/preflight` or `/sync` wins:** if `skills/preflight` or `skills/sync` is your own skill, the installer
-  leaves it alone and skips the session system as a whole: both engine session skills, `tools/session` and the
+- **Your own `/preflight` or `/sync` wins:** if `skills/preflight` or `skills/sync` is your own skill, or
+  `commands/preflight.md` or `commands/sync.md` is your own slash command, the installer leaves it alone and skips the session system as a whole: both engine session skills, `tools/session` and the
   session-handoff CLAUDE.md block, so nothing points the model at your skill. `--update` does the same and removes
   a session-handoff block an earlier install left in CLAUDE.md. A note says how to switch.
+- **Your own hook paths win:** when `settings.json` already runs an engine hook from another path that works (say
+  your own config repo), the installer leaves that entry and file alone and notes it, instead of repointing it.
 - **Other locations:** the skills call `~/.claude/tools/session/` by that path, and the tools keep handoffs in
   `~/.claude` unless `CLAUDE_VAULT` is set. For an `--into-repo` or `CLAUDE_DIR` install, edit that path in
   `skills/preflight` and `skills/sync` (the installer prints the exact path); `CLAUDE_VAULT` moves the vault only.

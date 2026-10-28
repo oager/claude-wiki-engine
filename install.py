@@ -434,25 +434,31 @@ def plan_skill_refresh(plan: Plan, base: Path, name: str, src: Path, dst: Path, 
                   f"skills/ (rename or delete it), then run: {reinstall})")
 
 
-def session_conflicts(skills_real: Path, installing: set[str]) -> list[str]:
-    """preflight/sync skills that will be the USER's own after this run: present, not an engine copy, and not
-    being replaced by one. The session block tells the model to use /preflight and /sync, so wiring it next to a
-    same-named skill of the user's would point it at their unrelated workflow."""
-    return sorted(n for n in SESSION_EXTRAS
-                  if n not in installing and ((skills_real / n).exists() or (skills_real / n).is_symlink())
-                  and not is_engine_skill(skills_real / n))
+def session_conflicts(skills_real: Path, installing: set[str], commands_dir: Path) -> list[str]:
+    """The user's own /preflight and /sync after this run, as paths: a skill that is present, not an engine copy and
+    not being replaced by one, or a same-named slash command (`commands/<name>.md`, never replaced). The session
+    block tells the model to use /preflight and /sync, so wiring it next to either would point it at their
+    unrelated workflow."""
+    out = []
+    for n in sorted(SESSION_EXTRAS):
+        if n not in installing and ((skills_real / n).exists() or (skills_real / n).is_symlink()) \
+                and not is_engine_skill(skills_real / n):
+            out.append(f"skills/{n}")
+        if (commands_dir / f"{n}.md").exists():
+            out.append(f"commands/{n}.md")
+    return out
 
 
 def session_conflict_note(conflicts: list[str], update: bool = False, removed_block: bool = False) -> str:
     """One note for a preflight/sync conflict. An install skips the session system as a whole (both engine
     session skills, tools/session, the CLAUDE.md block): /preflight and /sync only work as a set."""
-    names = " and ".join(f"skills/{n}" for n in conflicts)
-    verb = "is your own skill" if len(conflicts) == 1 else "are your own skills"
+    names = " and ".join(conflicts)
+    verb = "is your own" if len(conflicts) == 1 else "are your own"
     what = ("no refresh of preflight/sync, no tools/session, no CLAUDE.md block" if update
             else "engine preflight + sync skills, tools/session, CLAUDE.md block")
     note = (f"skip the session handoff system as a whole ({what}): {names} {verb}, not the engine's, and the "
             f"engine's /preflight and /sync only work together with their tools and block, which would send "
-            f"/{conflicts[0]} to yours.")
+            f"/{Path(conflicts[0]).stem} to yours.")
     if removed_block:
         note += " Removing the engine's session-handoff block from CLAUDE.md (left by an earlier install)."
     return note + " To use it, rename or remove yours, then run: install.py --extras preflight,sync"
@@ -513,6 +519,42 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
 _SNAPSHOTTED: set[str] = set()  # files backed up THIS run -- snapshot once, before ANY wiring
 
 
+def working_hook_elsewhere(settings_path: Path, command: str, event: str):
+    """The script an existing `event` entry for the same hook file runs, when that entry works as written but differs
+    from `command`: `node <path>` with the file present and no backslash (a POSIX shell mangles those). Such an entry
+    is the owner's choice (e.g. a hook run from their own tracked config repo), so it is left alone. None otherwise:
+    no entry, already current, or broken (then merge_hook repairs it)."""
+    import json
+    sp = settings_path.resolve() if settings_path.is_symlink() else settings_path
+    try:
+        d = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+    except Exception:
+        return None
+    fname = command.split()[-1].replace("\\", "/").split("/")[-1]
+    for e in (d.get("hooks") or {}).get(event) or []:
+        for h in e.get("hooks", []) if isinstance(e, dict) else []:
+            hc = h.get("command", "") if isinstance(h, dict) else ""
+            if not hc or hc == command or hc.replace("\\", "/").split("/")[-1] != fname:
+                continue
+            parts = hc.split(None, 1)
+            if len(parts) == 2 and parts[0] == "node" and "\\" not in hc:
+                script = Path(parts[1].strip().strip("'\"")).expanduser()
+                if script.is_file():
+                    return script
+    return None
+
+
+def hook_kept(plan, base: Path, hf: str, hsrc: Path, hdst: Path, event: str) -> bool:
+    """True (with a plan note) when settings.json already runs this hook from a working path other than `hdst`:
+    neither copied nor rewired, since a copy at `hdst` would never run."""
+    kept = working_hook_elsewhere(base / "settings.json", f"node {hdst.as_posix()}", event)
+    if kept is None or kept.resolve() == hdst.resolve():
+        return False
+    plan.note(f"hook {hf}: settings.json runs {kept.as_posix()}, which works: left as is "
+              f"(to refresh it, copy {hsrc.as_posix()} there)")
+    return True
+
+
 def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
     """Register (or RECONCILE) a hook command in settings.json: backup first, preserve every other
     key, keep a trailing newline. Surgical -- never touches the owner's other settings, never commits.
@@ -527,6 +569,8 @@ def merge_hook(settings_path: Path, command: str, event: str, matcher: str):
     the generated command (like the as_posix path fix) could never reach an already-installed hook: the
     old filename-substring check treated 'same filename' as 'already correct' and skipped."""
     import json
+    if working_hook_elsewhere(settings_path, command, event):
+        return  # the owner's working command for this hook: never repointed (see working_hook_elsewhere)
     sp = settings_path.resolve() if settings_path.is_symlink() else settings_path
     try:
         d = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
@@ -735,7 +779,7 @@ def build_plan(cfg: dict) -> Plan:
     session_wanted = SESSION_EXTRAS & set(extras)
     session_writes = {n for n in session_wanted if (ENGINE / "extra-skills" / n).exists()
                       and (cfg.get("force_skills") or not (skills_real / n).exists())}
-    conflicts = session_conflicts(skills_real, session_writes) if session_wanted else []
+    conflicts = session_conflicts(skills_real, session_writes, base / "commands") if session_wanted else []
     if conflicts:
         plan.note(session_conflict_note(conflicts))
     for name in extras:
@@ -792,7 +836,7 @@ def build_plan(cfg: dict) -> Plan:
         hooks_real = base / "hooks"
         for hf, event, matcher in HOOKS:
             hsrc, hdst = ENGINE / "hooks" / hf, hooks_real / hf
-            if not hsrc.exists():
+            if not hsrc.exists() or hook_kept(plan, base, hf, hsrc, hdst, event):
                 continue
             plan.add("hook", f"{hf} -> {hdst}",
                      lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
@@ -831,7 +875,7 @@ def do_update(cfg: dict):
     if cfg.get("hooks", True):
         for hf, event, matcher in HOOKS:
             hsrc, hdst = ENGINE / "hooks" / hf, base / "hooks" / hf
-            if hsrc.exists():
+            if hsrc.exists() and not hook_kept(plan, base, hf, hsrc, hdst, event):
                 plan.add("hook", f"{hf} -> {hdst}",
                          lambda s=hsrc, d=hdst: (d.parent.mkdir(parents=True, exist_ok=True), shutil.copy2(s, d)))
                 # Re-wire settings.json too (idempotent + self-healing) so an update actually
@@ -848,7 +892,7 @@ def do_update(cfg: dict):
     # skills are left exactly as they are: a refresh could turn a working older /preflight (which needed no
     # tools) into one that calls tools/session, which the conflict path withholds.
     engine_session = any(is_engine_skill(skills_real / n) for n in SESSION_EXTRAS)
-    conflicts = session_conflicts(skills_real, set())
+    conflicts = session_conflicts(skills_real, set(), base / "commands")
     for name in EXTRA_SKILLS:
         src, dst = ENGINE / "extra-skills" / name, skills_real / name
         if name in SESSION_EXTRAS and conflicts:
