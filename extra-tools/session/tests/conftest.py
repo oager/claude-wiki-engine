@@ -9,6 +9,17 @@ TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
 import lib  # noqa: E402
 
+
+def lock_sleep(monkeypatch, fn=lambda s: None):
+    """Replace close.py's lock-wait sleep only. Patching `close.time.sleep` patches the global `time.sleep`, which
+    subprocess also calls while reaping a git child that closed its pipes but has not exited yet: a test's sleep
+    hook then ran in the middle of `git pull` (a macOS CI flake, 2026-10-28)."""
+    import time
+    import types
+
+    import close
+    monkeypatch.setattr(close, "time", types.SimpleNamespace(**{**vars(time), "sleep": fn}))
+
 FENCE = "`" * 3
 SAMPLE_HANDOFF = """---
 key: alice-demo-proj
