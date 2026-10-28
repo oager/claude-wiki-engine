@@ -7,6 +7,7 @@ import time
 import close as cl
 import lib
 import open as op
+from conftest import lock_sleep
 from test_push import pushable  # noqa: F401  (fixture)
 
 
@@ -40,14 +41,14 @@ def test_pull_waits_out_a_short_push(vault, pushable, monkeypatch):  # noqa: F81
         (lock / cl.OWNER).unlink()
         lock.rmdir()
 
-    monkeypatch.setattr(cl.time, "sleep", nap)
+    lock_sleep(monkeypatch, nap)
     assert op.vault_state() == {"pull": "ok", "stuck_merge": False}
     assert naps and not lock.exists()
 
 
 def test_pull_skipped_while_a_push_holds_the_lock(vault, pushable, monkeypatch):  # noqa: F811
     lock = _held_by_other(vault)
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     calls = []
     real = lib.RUN
     monkeypatch.setattr(lib, "RUN", lambda cmd, *a, **k: calls.append(cmd) or real(cmd, *a, **k))
@@ -60,7 +61,7 @@ def test_pull_skipped_while_a_push_holds_the_lock(vault, pushable, monkeypatch):
 def test_push_mid_rebase_is_not_reported_as_a_stuck_merge(vault, pushable, monkeypatch):  # noqa: F811
     _held_by_other(vault)
     (vault / ".git" / "rebase-merge").mkdir()  # a /sync push is between pull --rebase and push
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     res = op.vault_state()
     assert res["stuck_merge"] is False and res["pull"].startswith("skipped (a /sync push is in progress")
 
@@ -70,7 +71,7 @@ def test_stale_lock_is_broken_and_pull_proceeds(vault, pushable, monkeypatch):  
     lock.mkdir()
     old = time.time() - 3600
     os.utime(lock, (old, old))
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     assert op.vault_state() == {"pull": "ok", "stuck_merge": False}
     assert not lock.exists()
 

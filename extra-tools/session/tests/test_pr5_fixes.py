@@ -11,7 +11,7 @@ import lib
 import open as op
 import pytest
 import repohandoff as rh
-from conftest import SAMPLE_HANDOFF, sh
+from conftest import SAMPLE_HANDOFF, lock_sleep, sh
 from test_push import pushable  # noqa: F401  (fixture)
 from test_repohandoff import PRIVATE
 
@@ -152,7 +152,7 @@ def test_push_file_in_nested_repo_is_stage_failed_and_unstages(vault, pushable):
 def _three_waiters(vault, monkeypatch, c_claims):
     """B (the push under test) judged the lock stale. Before B renames it aside, A breaks it and takes a fresh
     lock; before B renames A's lock back, C mkdirs the free path (and, when c_claims, also writes its owner)."""
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     lock = vault / ".sync.lock"
     lock.mkdir()
     os.utime(lock, (1, 1))  # stale
@@ -253,7 +253,7 @@ def test_held_lock_is_invisible_to_git_status(vault, pushable, monkeypatch):  # 
 
 
 def test_stale_lock_is_broken_without_leftovers(vault, pushable, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     lock = vault / ".sync.lock"
     lock.mkdir()
     os.utime(lock, (1, 1))

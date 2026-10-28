@@ -5,7 +5,7 @@ import subprocess
 
 import close as cl
 import pytest
-from conftest import sh
+from conftest import lock_sleep, sh
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def test_push_nothing(vault, pushable):
 
 
 def test_push_lock_busy_then_stale(vault, pushable, monkeypatch):
-    monkeypatch.setattr(cl.time, "sleep", lambda s: None)
+    lock_sleep(monkeypatch)
     lock = vault / ".sync.lock"
     lock.mkdir()
     assert cl.push([str(vault / "f0.txt")], "x", retries=2)["status"] == "locked"
