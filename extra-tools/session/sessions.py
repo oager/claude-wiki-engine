@@ -18,7 +18,7 @@ import procs
 
 EXPIRE_S = 7 * 86400  # an entry not rewritten for a week is stale whatever its pid says
 GRACE_S = 600  # never delete an entry written in the last 10 minutes (a slow probe must not erase a new session)
-ADOPT_S = 12 * 3600  # an ended entry stays adoptable this long (see _adoptable), then others() deletes it
+ADOPT_S = 12 * 3600  # an ended entry stays adoptable this long (see _adoptable), then others()/_sweep delete it
 
 
 def me():
@@ -203,8 +203,9 @@ def register(key, root, updated_seen, focus=None, adopt_recent=False):
 
 
 def deregister():
-    """Mark this process's entries ended in every project (SessionEnd hook). Ended entries are never listed; they
-    stay adoptable for ADOPT_S (a Code-tab /clear ends the process). Returns the paths marked."""
+    """Mark this process's entries ended in every project (SessionEnd hook), and sweep every project's stale ones.
+    Ended entries are never listed; they stay adoptable for ADOPT_S (a Code-tab /clear ends the process). Returns the
+    paths marked."""
     m = me()
     base = lib.vault() / "handoffs" / ".live"
     if m is None or not base.is_dir():
@@ -217,7 +218,23 @@ def deregister():
                 if data is not None and "ended" not in data:
                     _end(p, data, "exit")
                     gone.append(str(p))
+            _sweep(d, host)
     return gone
+
+
+def _sweep(d, host):
+    """Delete this host's entries ended over ADOPT_S ago, then the folder once it has stayed empty that long (a fresh
+    one may be about to get its first entry). A key that never runs /preflight again, such as a desktop Code-tab
+    chat's scratch folder, is otherwise never cleaned: others() only sweeps its own key."""
+    for p in d.glob("*.json"):
+        data = _read(p)
+        if data and data.get("host") == host and "ended" in data and not _recently_ended(data):
+            _unlink(p)
+    try:
+        if time.time() - d.stat().st_mtime >= ADOPT_S:
+            d.rmdir()
+    except OSError:
+        pass  # not empty, or already gone
 
 
 def set_focus(key, text):

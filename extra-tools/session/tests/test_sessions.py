@@ -257,6 +257,26 @@ def test_deregister_ends_own_entries_in_every_project(vault, me_env):
         assert "ended" not in json.loads(p.read_text(encoding="utf-8"))
 
 
+# Windows retest 2026-10-28: each new desktop Code-tab chat opens in its own scratch folder, so /preflight there
+# registers under a fresh key that never runs others() again. Session end sweeps every key instead.
+def test_deregister_sweeps_stale_ended_entries_and_empty_keys(vault, me_env):
+    base = vault / "handoffs/.live"
+    stale = _ended(vault, "old1", 900, sessions.ADOPT_S + 60)
+    recent = _ended(vault, "new1", 901, 60)
+    foreign = _ended(vault, "far1", 902, sessions.ADOPT_S + 60, host="another-box")
+    live = _entry(vault, "live1", 903)
+    scratch = base / "local-scratch-2026-10-27-f319dc"
+    scratch.mkdir(parents=True)
+    t = time.time() - sessions.ADOPT_S - 60
+    os.utime(scratch, (t, t))
+    fresh = base / "local-scratch-2026-10-28-a8d0bf"
+    fresh.mkdir()
+    sessions.deregister()
+    assert not stale.exists() and recent.exists() and foreign.exists() and live.exists()
+    # an empty key goes once it has stayed empty for ADOPT_S; a fresh one may be one /preflight is about to fill
+    assert not scratch.exists() and fresh.exists()
+
+
 def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_PID", raising=False)
