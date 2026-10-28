@@ -38,6 +38,18 @@ def test_collect_ambiguous_stops_early(tmp_path, vault):
     assert set(op.collect(hub)) == {"identity"}
 
 
+def test_collect_scratch_folder_stops_early(tmp_path, vault, monkeypatch):
+    import close as cl
+    import sessions
+    d = tmp_path / "scratch-workspaces" / "u1" / "scratch-2026-10-27-a8d0bf"
+    d.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "aaaa1111-bbbb")
+    monkeypatch.setenv("CLAUDE_PID", "4242")
+    assert set(op.collect(d)) == {"identity"} and set(cl.collect_close(d)) == {"identity"}
+    assert cl.session_cmd(d, None, "refresh", None)["ok"] is False
+    assert not (vault / "handoffs/.live").exists() and sessions.others("local-scratch-2026-10-27-a8d0bf") == []
+
+
 def test_collect_plain_folder_has_no_git_block(tmp_path, vault, fake):
     d = tmp_path / "notes"
     d.mkdir()

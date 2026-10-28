@@ -198,7 +198,7 @@ def _drift_one(s, ids, last):
 
 def collect_close(cwd, project=None):
     ident = lib.resolve_identity(cwd, project)
-    if ident["how"] == "ambiguous":
+    if not ident["key"]:  # ambiguous, or a Code-tab scratch folder
         return {"identity": ident}
     ids = lib.load_self_ids()
     (lib.vault() / "handoffs").mkdir(parents=True, exist_ok=True)
@@ -656,7 +656,8 @@ def session_cmd(cwd, project, action, text):
         return session_end()
     ident = lib.resolve_identity(cwd, project)
     if not ident.get("key"):
-        return {"ok": False, "reason": "ambiguous project; pass --project"}
+        what = "a Code-tab scratch folder, not a project" if ident["how"] == "scratch" else "ambiguous project"
+        return {"ok": False, "reason": f"{what}; pass --project"}
     if action == "focus":
         return sessions.set_focus(ident["key"], text)
     p = lib.handoff_path(ident["key"])

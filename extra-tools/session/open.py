@@ -481,7 +481,7 @@ def handoff_block(ident, cwd):
 def collect(cwd, project=None):
     ident = lib.resolve_identity(cwd, project)
     out = {"identity": ident}
-    if ident["how"] == "ambiguous":
+    if not ident["key"]:  # ambiguous, or a Code-tab scratch folder
         return out
     ids = lib.load_self_ids()
     if lib.vault_is_git():  # pull BEFORE reading the handoff: /sync on the other machine may have just pushed it

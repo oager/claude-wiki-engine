@@ -277,6 +277,22 @@ def test_deregister_sweeps_stale_ended_entries_and_empty_keys(vault, me_env):
     assert not scratch.exists() and fresh.exists()
 
 
+# A session killed without its SessionEnd hook is never marked ended; others() only prunes it when its own key runs
+# /preflight again. The sweep marks such an entry once it is past EXPIRE_S and its pid is gone (then deletes it later).
+def test_deregister_sweep_prunes_dead_entries_past_expiry(vault, me_env, monkeypatch):
+    dead = _entry(vault, "dead1", 900, age_s=sessions.EXPIRE_S + 60)
+    alive = _entry(vault, "busy1", 901, age_s=sessions.EXPIRE_S + 60)
+    unknown = _entry(vault, "unk1", 902, age_s=sessions.EXPIRE_S + 60)
+    young = _entry(vault, "young1", 903, age_s=sessions.EXPIRE_S - 3600)
+    foreign = _entry(vault, "far2", 904, host="another-box", age_s=sessions.EXPIRE_S + 60)
+    _alive(monkeypatch, {901: CLAUDE, 902: (None, None)})
+    sessions.deregister()
+    data = json.loads(dead.read_text(encoding="utf-8"))
+    assert data["ended_by"] == "prune"
+    for p in (alive, unknown, young, foreign):
+        assert "ended" not in json.loads(p.read_text(encoding="utf-8"))
+
+
 def test_deregister_outside_claude_is_a_no_op(vault, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     monkeypatch.delenv("CLAUDE_PID", raising=False)

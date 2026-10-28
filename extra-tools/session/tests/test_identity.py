@@ -72,6 +72,18 @@ def test_identity_plain_folder(tmp_path):
     assert (ident["key"], ident["how"], ident["repo"]) == ("local-my-notes", "folder", None)
 
 
+# Windows retest 2026-10-28: a new desktop Code-tab chat starts in its own scratch folder, which used to become a
+# fresh `local-scratch-*` project with no handoff. It is no project: report it, never key it.
+@pytest.mark.parametrize("parts", [("Scratch-Workspaces", "u1", "u2", "scratch-2026-10-27-f319dc"),
+                                   ("scratch-workspaces", "u1")])
+def test_identity_code_tab_scratch_folder_is_no_project(tmp_path, parts):
+    d = tmp_path.joinpath("AppData", "Roaming", "Claude", *parts)
+    d.mkdir(parents=True)
+    ident = lib.resolve_identity(d)
+    assert (ident["key"], ident["how"]) == (None, "scratch")
+    assert lib.resolve_identity(d, project="alice-demo")["key"] == "alice-demo"  # --project still picks one
+
+
 def test_repo_without_origin_keys_by_folder(tmp_path):
     r = tmp_path / "NoRemote"
     _init(r)

@@ -224,12 +224,23 @@ def deregister():
 
 def _sweep(d, host):
     """Delete this host's entries ended over ADOPT_S ago, then the folder once it has stayed empty that long (a fresh
-    one may be about to get its first entry). A key that never runs /preflight again, such as a desktop Code-tab
-    chat's scratch folder, is otherwise never cleaned: others() only sweeps its own key."""
+    one may be about to get its first entry). Mark ended ("prune") an entry not rewritten for EXPIRE_S whose pid is
+    gone: a session killed without its SessionEnd hook. A key that never runs /preflight again is otherwise never
+    cleaned: others() only sweeps its own key."""
     for p in d.glob("*.json"):
         data = _read(p)
-        if data and data.get("host") == host and "ended" in data and not _recently_ended(data):
-            _unlink(p)
+        if not data or data.get("host") != host:
+            continue
+        if "ended" in data:
+            if not _recently_ended(data):
+                _unlink(p)
+            continue
+        try:
+            stale = time.time() - p.stat().st_mtime >= EXPIRE_S
+        except OSError:
+            continue
+        if stale and alive_name(data.get("pid"))[0] is False:
+            _end(p, data, "prune")
     try:
         if time.time() - d.stat().st_mtime >= ADOPT_S:
             d.rmdir()
