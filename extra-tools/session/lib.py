@@ -145,6 +145,9 @@ def resolve_identity(cwd, project=None):
         if handoff_path(own).is_file():
             return {"key": own, "repo": None, "root": str(cwd), "how": "folder-handoff", "candidates": cands}
         return {"key": None, "repo": None, "root": str(cwd), "how": "ambiguous", "candidates": cands}
+    if any(part.lower() == "scratch-workspaces" for part in cwd.parts):
+        # a desktop Code-tab chat's own scratch folder: no project, so no key (else every new chat makes one)
+        return {"key": None, "repo": None, "root": str(cwd), "how": "scratch", "candidates": []}
     return {"key": key_for(None, cwd), "repo": None, "root": str(cwd), "how": "folder", "candidates": []}
 
 

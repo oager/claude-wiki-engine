@@ -20,7 +20,9 @@ others}`, `updated_seen`, `legacy`, `git {dirty, dirty_count, unpushed, no_pr_br
 `running {supported, procs, others_procs, via, reason}`, `drift`,
 `inbox_untriaged`, `inbox_notes`, `repo_handoff`, `repo_sha`, `vault_sha`.
 `identity.how == "ambiguous"` →
-ask which project, re-run with `--project <key>`. Keep this `vault_sha`: it is recorded **before** this session's
+ask which project, re-run with `--project <key>`. `identity.how == "scratch"` (a desktop Code-tab chat's own scratch
+folder) → there is no project to sync: ask which handoff key this session's work belongs to and re-run with
+`--project <key>`, or stop. Keep this `vault_sha`: it is recorded **before** this session's
 push, which is exactly what the next `/preflight` diffs from.
 
 ## Step 1 — Write the handoff (the clean-close contract)

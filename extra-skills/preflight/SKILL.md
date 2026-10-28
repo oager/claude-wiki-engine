@@ -26,6 +26,9 @@ git status.
 - `identity.how == "folder-handoff"`: a folder of several repos with its own handoff; use it as-is.
 - `identity.how == "ambiguous"`: list `identity.candidates` (key + root) and ask which project, then re-run with
   `--project <key>`.
+- `identity.how == "scratch"`: this is a desktop Code-tab chat's own scratch folder, not a project, so nothing was
+  read or registered. Report only `Not a project folder: start the chat in the project's folder (or name a handoff
+  key to re-run with --project <key>).` and stop.
 - `fatal` present: the collector itself broke. Say so in the report and read the handoff by hand.
 
 ## Step 1a: User handoff and inbox
