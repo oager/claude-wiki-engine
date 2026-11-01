@@ -44,7 +44,8 @@ git status.
 ## Step 2: Read the handoff
 
 - `handoff.exists`: Read `handoff.path` in full (small by design). **Next up** is the agenda, **Warnings** is what the
-  last session left undone, **Standing notes** are this project's rules.
+  last session left undone, **Standing notes** are this project's rules. The collector also returns
+  `handoff.standing_notes`, so if the file read is truncated the rules still reach you: apply them either way.
 - else `handoff.legacy`: Read `legacy.path` and label it `legacy handoff, N days old`. Treat it as possibly stale;
   the first `/sync` converts it.
 - neither: no handoff. Build a provisional Next up from `git` (dirty, unpushed, PRs), queue checks and failing
@@ -65,6 +66,20 @@ they keep in the repo. Summarize what changed under you.
 - `repo_handoff.changed_by_other`: `Collab: <updated_by> updated the repo handoff <age> ago`, and list their
   `repo_handoff.next_up` **separately** from this project's Next up. Never merge the two silently.
 - `repo_handoff.reason` set: say the shared handoff could not be read, and why.
+
+## Step 4a: Managed projects (only when the collector returned `managed` or `managed_by`)
+
+Most projects have neither key; then skip this step and print no line. A session **manages** another project when
+it started that project's session or the user put it in charge of one; the Profile records it as
+`"manages": [{"key": "<child key>"}]`, and the child records `"managed_by": "<this key>"`.
+- Each `managed` entry: one `Manages:` line, `<key>: <next_up_1> · <age> · <live N | no registered session>`, plus
+  its `warnings` when not `none`. `live: 0` means no session **registered**, not that none is open: one that never
+  ran `/preflight` is invisible to the registry. `handoff: false`: `<key>: no handoff yet`. `linked_back: false`: add
+  `no managed_by back-link (/sync proposes it)`. `error`: show it.
+- These are the child's agenda, not this project's: never merge them into Next up and never act on them yourself.
+  When the child is waiting on the user, add one Next up item `<key>: waiting on you (<next_up_1>)`.
+- `managed_by`: one `Managed by:` line, `<key> · <live N | no registered session>`, plus `linked_back: false` as
+  above. Status this session should report back goes to the manager with `close.py note --to <key>`.
 
 ## Step 5: Checks
 
@@ -102,6 +117,8 @@ Warnings: <from last close>                        (only if not "none")
 Health:   <N/N checks OK | failures · unverified>
 Git:      <branch vs origin · dirty/unpushed · PRs + CI · issues | "gh unavailable: <git.error>" | "n/a (not a repo)">
 Collab:   <others since last session>              (only if any)
+Manages:  <one line per managed project>           (only when `managed`; Step 4a)
+Managed by: <manager key · live>                   (only when `managed_by`; Step 4a)
 Metrics:  <Profile metrics>                        (only if declared)
 Market:   <one line>                               (trading only)
 Global:   <skills changed · relevant knowledge · Claude Code relaunch · plugins differing from catalog>

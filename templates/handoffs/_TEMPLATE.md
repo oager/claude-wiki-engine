@@ -33,6 +33,8 @@ none
   "queues":   [{"name": "label", "file": "path", "count": "regex, default ^- "}]
   "logs":     [{"path": "logs/app.log", "max_age_h": 24}]
   "metrics":  [{"name": "label", "file": "state.json", "key": "dotted.key"}]
+  "manages":  [{"key": "owner-child"}]   this session manages that project's session; /preflight shows its state
+  "managed_by": "owner-parent"          the project whose session manages this one
   Relative paths are from the repo root. `host` is omitted for this machine; unit, url and host must not start with "-". -->
 
 ## Standing notes
