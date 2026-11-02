@@ -85,9 +85,10 @@ it started that project's session or the user put it in charge of one; the Profi
 
 The project keeps a `/ripple` consumer map (`docs/DATA_CONSUMERS.md`, or the Profile's `ripple.map`); `ripple` is its
 sweep watermark, read from the branch the services run. Counts use refs as of this run's fetch of the project repo;
-other clones are counted as of their own last fetch.
+other clones are counted against their own upstream (`ripple.branch` is this project's only), as of their own last fetch.
 - `stale: true` → one `Ripple:` line: `watermark <oldest_days>d · <repo> <unswept> unswept · … · never swept: <list>`
-  (`unswept: null` is **unknown**, never 0: no local clone, or the swept commit isn't in it). Add one Next up item,
+  (`unswept: null` is **unknown**, never 0: no local clone, or the swept commit isn't in it; a row `error`, e.g.
+  `origin/<branch> not in clone` or `no upstream branch`, replaces its count as `<repo> ? (<error>)`). Add one Next up item,
   `run /ripple discover (watermark <oldest_days>d)`, after this session's own work.
 - `error` set → `Ripple: <error>` on the Health line (a bad `"ripple"` Profile key or an unreadable map).
 - `stale: false` → no line.
