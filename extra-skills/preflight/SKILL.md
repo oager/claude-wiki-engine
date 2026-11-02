@@ -17,7 +17,7 @@ python3 ~/.claude/tools/session/open.py --cwd "$PWD"     # Windows Git Bash: pyt
 ```
 
 One JSON object: `identity`, `handoff`, `global`, `inbox`, `git`, `collab`, `repo_handoff`, `sessions`, `type`,
-`checks`. It always exits 0; a failed
+`checks`, and `ripple` (only when the project has a `/ripple` consumer map). It always exits 0; a failed
 check says so in its own entry. **Never re-derive a fact it returned**: no hand-probing unit names, no re-running
 git status.
 
@@ -81,6 +81,17 @@ it started that project's session or the user put it in charge of one; the Profi
 - `managed_by`: one `Managed by:` line, `<key> · <live N | no registered session>`, plus `linked_back: false` as
   above. Status this session should report back goes to the manager with `close.py note --to <key>`.
 
+## Step 4b: Consumer-map sweep (only when the collector returned `ripple`)
+
+The project keeps a `/ripple` consumer map (`docs/DATA_CONSUMERS.md`, or the Profile's `ripple.map`); `ripple` is its
+sweep watermark, read from the branch the services run. Counts use refs as of this run's fetch of the project repo;
+other clones are counted as of their own last fetch.
+- `stale: true` → one `Ripple:` line: `watermark <oldest_days>d · <repo> <unswept> unswept · … · never swept: <list>`
+  (`unswept: null` is **unknown**, never 0: no local clone, or the swept commit isn't in it). Add one Next up item,
+  `run /ripple discover (watermark <oldest_days>d)`, after this session's own work.
+- `error` set → `Ripple: <error>` on the Health line (a bad `"ripple"` Profile key or an unreadable map).
+- `stale: false` → no line.
+
 ## Step 5: Checks
 
 - `status: fail`: flag it on the Health line.
@@ -117,6 +128,7 @@ Warnings: <from last close>                        (only if not "none")
 Health:   <N/N checks OK | failures · unverified>
 Git:      <branch vs origin · dirty/unpushed · PRs + CI · issues | "gh unavailable: <git.error>" | "n/a (not a repo)">
 Collab:   <others since last session>              (only if any)
+Ripple:   <watermark age · unswept · never swept>  (only when `ripple.stale`; Step 4b)
 Manages:  <one line per managed project>           (only when `managed`; Step 4a)
 Managed by: <manager key · live>                   (only when `managed_by`; Step 4a)
 Metrics:  <Profile metrics>                        (only if declared)

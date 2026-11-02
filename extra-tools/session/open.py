@@ -22,6 +22,7 @@ import inbox  # noqa: E402
 import lib  # noqa: E402
 import procs  # noqa: E402
 import repohandoff  # noqa: E402
+import ripplemap  # noqa: E402
 import sessions  # noqa: E402
 
 UNMERGED = {"UU", "AA", "UD", "DU", "DD", "AU", "UA"}
@@ -567,6 +568,9 @@ def collect(cwd, project=None):
         out["managed"] = managed_block(profile, ident["key"])
     if "managed_by" in profile:
         out["managed_by"] = other_project(profile["managed_by"], ident["key"], "manages")
+    rip = ripplemap.watermark_block(root, profile)  # optional: only projects with a /ripple consumer map
+    if rip is not None:
+        out["ripple"] = rip
     return out
 
 
