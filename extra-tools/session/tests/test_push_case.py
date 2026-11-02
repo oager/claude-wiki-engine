@@ -1,7 +1,7 @@
 # ~/.claude/tools/session/tests/test_push_case.py
 # push on a case-insensitive checkout (Windows, macOS): Path.resolve() returns the ON-DISK case
-# (projects/C--Users-x-Claude-Workspaces/...) while git can track another spelling
-# (projects/C--Users-x-claude-workspaces/...). Git pathspecs are case-sensitive, so add/diff matched
+# (projects/C--Users-x-My-Projects/...) while git can track another spelling
+# (projects/C--Users-x-my-projects/...). Git pathspecs are case-sensitive, so add/diff matched
 # nothing and push returned "nothing" for a file that had changed (Windows, 2026-10-17).
 import os
 import subprocess
@@ -11,8 +11,8 @@ import lib
 import pytest
 from conftest import sh
 
-GIT_DIR = "projects/C--Users-x-claude-workspaces/memory"
-DISK_DIR = "projects/C--Users-x-Claude-Workspaces/memory"
+GIT_DIR = "projects/C--Users-x-my-projects/memory"
+DISK_DIR = "projects/C--Users-x-My-Projects/memory"
 
 
 @pytest.fixture
@@ -75,8 +75,8 @@ def test_push_commits_under_gits_spelling_on_a_case_insensitive_disk(vault, push
     sh("git", "push", "-q", cwd=vault)
     # The folder's on-disk case changes (two renames: a case-only rename is a no-op on some systems).
     proj = vault / "projects"
-    os.rename(proj / "C--Users-x-claude-workspaces", proj / "tmp-rename")
-    os.rename(proj / "tmp-rename", proj / "C--Users-x-Claude-Workspaces")
+    os.rename(proj / "C--Users-x-my-projects", proj / "tmp-rename")
+    os.rename(proj / "tmp-rename", proj / "C--Users-x-My-Projects")
 
     (vault / DISK_DIR / "note.md").write_text("v2", encoding="utf-8")
     r = cl.push([str(vault / DISK_DIR / "note.md")], "sync: note")
@@ -87,4 +87,4 @@ def test_push_commits_under_gits_spelling_on_a_case_insensitive_disk(vault, push
     r = cl.push([str(vault / DISK_DIR / "new.md")], "sync: new")
     assert r["status"] == "ok", r
     assert names(pushable, "log", "-1", "--name-only", "--format=") == [f"{GIT_DIR}/new.md"]
-    assert not [n for n in names(pushable, "ls-tree", "-r", "--name-only", "main") if "Claude-Workspaces" in n]
+    assert not [n for n in names(pushable, "ls-tree", "-r", "--name-only", "main") if "My-Projects" in n]

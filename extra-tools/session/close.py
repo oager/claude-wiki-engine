@@ -31,6 +31,7 @@ import leakguard  # noqa: E402
 import lib  # noqa: E402
 import procs  # noqa: E402
 import repohandoff  # noqa: E402
+import ripplemap  # noqa: E402
 import sessions  # noqa: E402
 from procs import (  # noqa: E402
     SHELLS,
@@ -224,6 +225,7 @@ def collect_close(cwd, project=None):
         "drift": deploy_drift(root, profile, ids) if is_repo else [],
         "repo_handoff": ({"uncommitted": bool(lib.git(root, "status", "--porcelain", "--", repohandoff.REL))}
                          if profile.get("shared") and is_repo else None),
+        "seams": ripplemap.seams_block(root, profile, h["meta"].get("updated"), ident["key"]),
         "repo_sha": lib.git(root, "rev-parse", "--short", "HEAD") if is_repo else None,
         "vault_sha": lib.git(lib.vault(), "rev-parse", "--short", "HEAD"),  # recorded BEFORE this session's push
         "inbox_untriaged": len(notes),
@@ -483,7 +485,7 @@ def push(files, message, retries=15):
             return {"status": "stage_failed", "detail": "outside the vault: " + ", ".join(outside)}
         if g("config", "--bool", "core.ignorecase")[1].strip() == "true":
             # Case-insensitive checkout (Windows, macOS): resolve() returns the ON-DISK case
-            # (projects/C--Users-x-Claude-Workspaces) while git may track another (...-claude-workspaces), and
+            # (projects/C--Users-x-My-Projects) while git may track another (...-my-projects), and
             # git pathspecs are case-sensitive, so add/diff matched nothing and push said "nothing". resolve()
             # stays for the containment check above; the pathspecs use git's own spelling.
             rc, out, _ = g("ls-files", "-z")
@@ -635,7 +637,11 @@ def check_profile(path):
         text = Path(path).read_text(encoding="utf-8")
     except (OSError, ValueError) as e:
         return {"profile_error": f"unreadable: {type(e).__name__}: {e}"}
-    return {"profile_error": lib.parse_handoff(text)["profile_error"]}
+    h = lib.parse_handoff(text)
+    res = {"profile_error": h["profile_error"]}
+    if "ripple" in h["profile"]:  # optional key: projects without it keep the one-field answer
+        res["ripple_error"] = ripplemap.validate(h["profile"])
+    return res
 
 
 def session_end():
@@ -685,6 +691,7 @@ def main(argv=None):
     d = sub.add_parser("inbox-done")
     d.add_argument("--files", nargs="+", required=True)
     sub.add_parser("repo-handoff")
+    sub.add_parser("ripple-done")
     se = sub.add_parser("session")
     se.add_argument("action", choices=["focus", "refresh", "end"])
     se.add_argument("text", nargs="?", default="")
@@ -714,6 +721,10 @@ def main(argv=None):
             res = write_repo_handoff(a.cwd, a.project)
         elif a.cmd == "session":
             res = session_cmd(a.cwd, a.project, a.action, a.text)
+        elif a.cmd == "ripple-done":
+            ident = lib.resolve_identity(a.cwd, a.project)
+            res = (ripplemap.mark_rippled(ident["key"]) if ident.get("key")
+                   else {"ok": False, "reason": "no project here; pass --project"})
         else:
             res = collect_close(a.cwd, a.project)
     except Exception as e:  # /sync must still be able to report: surface the failure as data
