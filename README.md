@@ -109,6 +109,11 @@ auto-update with the repo.
   next `/preflight` in that project shows, on any machine that shares the vault.
 - **Shared projects:** set `"shared": true` in the project Profile and `/sync` also writes a public
   `.claude/HANDOFF.md` (leak-guarded) for collaborators.
+- **Managed sessions (optional):** when one session starts or runs another project's session, its Profile gets
+  `"manages": [{"key": "<child>"}]` and the child's gets `"managed_by": "<parent>"`. `/preflight` then shows each
+  managed project's Next up #1, age, warnings and registered sessions, so the job survives a fresh session instead
+  of living in prose. `/sync` proposes the link only when this session actually started or took charge of one.
+  Without the keys nothing changes.
 - **Plain setups work:** no git in `~/.claude`, one machine, no systemd — the extras switch on when present.
 - **Updating:** `python install.py --update` refreshes skills tagged `source: claude-wiki-engine` (core and extras)
   and the handoff templates; any that you edited is backed up to a timestamped copy under `<config>/.wikibak/` first

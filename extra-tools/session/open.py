@@ -215,6 +215,55 @@ def session_block(key, root, updated):
     return res
 
 
+# --- managed projects (optional: only when the Profile declares "manages" or "managed_by") ------------
+
+_KEY = re.compile(r"[a-z0-9][a-z0-9._-]*")  # same rule as sessions.live_dir: a key must never escape handoffs/
+
+
+def _first_item(next_up):
+    for line in next_up.splitlines():
+        if line.strip().startswith("1."):
+            return line.strip()[2:].strip()[:200]
+    return ""
+
+
+def _points_at(value, me):
+    """Does a Profile value ("managed_by": "<key>" or "manages": [{"key": "<key>"}]) name `me`?"""
+    if isinstance(value, list):
+        return any(isinstance(e, dict) and e.get("key") == me for e in value)
+    return value == me
+
+
+def other_project(key, me, link_field):
+    """Another project's handoff state, for a session that manages it (or is managed by it). link_field is the
+    Profile key in THAT handoff that should point back at `me`."""
+    if not (isinstance(key, str) and _KEY.fullmatch(key)):
+        return {"key": "?", "error": f"bad entry: {key!r}"[:120]}
+    p = lib.handoff_path(key)
+    res = {"key": key, "handoff": p.is_file()}
+    if p.is_file():
+        try:
+            h = lib.parse_handoff(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:  # one unreadable handoff must not break this project's briefing
+            return {**res, "error": f"unreadable: {type(e).__name__}"}
+        res["linked_back"] = _points_at(h["profile"].get(link_field), me)
+        if link_field == "managed_by":  # the manager wants the child's agenda; the child only needs the link
+            t = lib.parse_utc(h["meta"].get("updated"))
+            res.update(age_h=round((dt.datetime.now(dt.UTC) - t).total_seconds() / 3600, 1) if t else None,
+                       updated_by=h["meta"].get("updated_by"),
+                       next_up_1=_first_item(h["sections"].get("Next up", "")),
+                       warnings=h["sections"].get("Warnings", ""))
+    res["live"] = len(sessions.others(key))  # registered sessions only: an open session that never ran /preflight is 0
+    return res
+
+
+def managed_block(profile, me):
+    entries = profile.get("manages")
+    if not isinstance(entries, list):
+        return [{"key": "?", "error": "bad entry: manages is not a list"}]
+    return [other_project(e.get("key") if isinstance(e, dict) else None, me, "managed_by") for e in entries]
+
+
 # --- type detection ------------------------------------------------------------------
 
 def detect_type(root, meta):
@@ -474,7 +523,7 @@ def handoff_block(ident, cwd):
     block = {"path": str(p), "exists": True, "legacy": None, "updated": m.get("updated"), "age_h": age,
              "updated_by": m.get("updated_by"), "repo_sha": m.get("repo_sha"), "vault_sha": m.get("vault_sha"),
              "next_up": h["sections"].get("Next up", ""), "warnings": h["sections"].get("Warnings", ""),
-             "profile_error": h["profile_error"]}
+             "standing_notes": h["sections"].get("Standing notes", ""), "profile_error": h["profile_error"]}
     return block, m, h["profile"]
 
 
@@ -514,6 +563,10 @@ def collect(cwd, project=None):
     out["checks"] = run_checks(out["type"]["type"], root, profile, ids)
     out["sessions"] = session_block(ident["key"], root, meta.get("updated"))
     out["concurrent"] = out["sessions"]["others"]  # alias kept for one release
+    if "manages" in profile:
+        out["managed"] = managed_block(profile, ident["key"])
+    if "managed_by" in profile:
+        out["managed_by"] = other_project(profile["managed_by"], ident["key"], "manages")
     return out
 
 
