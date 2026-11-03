@@ -50,7 +50,8 @@ When naming another session, show `<id>/<pid>` when two ids match (a fork may ke
 File: `handoff.path`. **New project** → copy `~/.claude/handoffs/_TEMPLATE.md` there. **`legacy` set** → convert
 it: Open Items / Pending → Next up; the STATE section and any `status.json` → Current state; known units, ports and
 log paths → Profile; the dated diary → Last session (trim archives the old part); "What NOT to do" and procedures →
-Standing notes. Leave the legacy file where it is.
+Standing notes. A `session.md` from an older /sync: What we were working on and Where we left off → Next up and Last
+session; Open questions → Next up; Context → Standing notes. Leave the legacy file where it is.
 
 | Section | Rule |
 |---|---|

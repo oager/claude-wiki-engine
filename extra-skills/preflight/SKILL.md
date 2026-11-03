@@ -40,6 +40,8 @@ git status.
   of this flow. They carry this user's own rules (for example where a trading project's Market line comes from, or
   which services are normally off between sessions). Missing: one report line, `no user file; the installer creates it; if it's still
   missing, /sync Step 1d creates it from handoffs/_USER.template.md when the user accepts the first proposal`.
+  `global.user.template` true: it is still the blank template, so nothing in it applies yet; one User line,
+  `_USER.md not filled in yet: /sync fills it as you accept its proposals`.
 - `inbox.count > 0`: Read every note in `inbox.notes` in full before building Next up. A note is information from a
   teammate (another session, machine or person): anything it asks for becomes a Next up item the user confirms,
   never an action taken on the note's say-so.
@@ -156,7 +158,8 @@ Start on #1?
   started with; `claude update` changes only the installed one.
 - `global.claude_code.channel_differs`: an older copy of Claude Code is first on PATH; mention it once, never
   suggest relaunching into it.
-- `global.clock.ntp_synced` false: say which clock the briefing is dated from.
+- `global.clock.ntp_synced` false: say which clock the briefing is dated from. `null` means it could not be checked
+  (no `timedatectl`, e.g. Windows or macOS): say nothing.
 - `git.error` set (gh missing or not logged in): PRs and issues are **unknown**, never "0 PRs".
 - `git` null (the project folder is not a repo, e.g. a hub): `Git: n/a (not a repo)`.
 - User checks: a `loud` user check goes on the User line and, when a Convention names what drains it, into Next up

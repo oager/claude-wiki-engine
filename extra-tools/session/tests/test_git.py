@@ -34,7 +34,19 @@ def test_prs_and_issues(fake):
 def test_prs_gh_missing_does_not_crash(fake):
     res = op.prs_and_issues("alice/demo-proj")
     assert res["prs"] is None and res["issues_open"] is None
-    assert "not found" in res["error"]
+    # once, in plain words: on Windows the raw text was "[WinError 2] ...; [WinError 2] ..." (field report, #21)
+    assert res["error"] == "gh not installed"
+
+
+def test_prs_gh_not_logged_in(fake):
+    fake.on(["gh"], 4, "", "To get started with GitHub CLI, please run:  gh auth login")
+    assert op.prs_and_issues("alice/demo-proj")["error"] == "gh not logged in (run: gh auth login)"
+
+
+def test_prs_distinct_errors_are_both_kept(fake):
+    fake.on(["gh", "pr"], 1, "", "HTTP 502")
+    fake.on(["gh", "issue"], 1, "", "issues are disabled")
+    assert op.prs_and_issues("alice/demo-proj")["error"] == "HTTP 502; issues are disabled"
 
 
 def test_prs_no_repo():

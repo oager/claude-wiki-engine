@@ -19,6 +19,13 @@ Last updated: 2026-11-03
 - Alert: no working interpreter: exit 127 and `run.sh: session tools need Python 3.11+ ...` on stderr.
 - Recovery: install Python 3.11+ so `python3` or `python` is on PATH.
 
+### GitHub CLI errors (`lib.gh_json`, fixed 2026-11-03, field report PR #21)
+- What broke: a missing `gh` came back as the raw OS error, twice (`[WinError 2] ...; [WinError 2] ...` on Windows).
+- Handling: exit 127 -> `gh not installed`; exit 4 (gh's "authentication required") -> `gh not logged in (run: gh auth
+  login)`; anything else keeps gh's own message. The collector joins distinct errors only once each.
+- Alert: `git.error` is set and `prs`/`issues_open` are `null`; /preflight reports PRs and issues as unknown, never 0.
+- Recovery: install gh, or run `gh auth login`.
+
 ### Checks report "unknown", not "down"
 - Handling: a check whose tool failed (curl/ss/systemctl missing, timeout, unreadable file) is `unknown`; only an
   observed bad state is `fail`/`warn`. Guessed unit names that miss are "unverified".

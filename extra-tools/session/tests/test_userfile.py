@@ -20,6 +20,17 @@ def test_user_file_missing(vault, monkeypatch, tmp_path):
     assert lib.load_self_ids() == {"names": [], "emails": [], "hosts": {}}
 
 
+def test_user_file_flags_the_untouched_template(vault):
+    (vault / "handoffs").mkdir(exist_ok=True)
+    p = vault / "handoffs/_USER.md"
+    p.write_text("---\nkey: _user\ntype: user\nupdated: <YYYY-MM-DDTHH:MMZ>\nupdated_by: <hostname>\n---\n"
+                 "# User handoff\n\n## Conventions\n", encoding="utf-8")
+    assert lib.user_file()["template"] is True
+    p.write_text(p.read_text(encoding="utf-8").replace("<YYYY-MM-DDTHH:MMZ>", "2026-11-03T16:00Z"),
+                 encoding="utf-8")
+    assert lib.user_file()["template"] is False
+
+
 def test_identity_from_user_file(vault, monkeypatch, tmp_path):
     monkeypatch.setattr(lib, "HERE", tmp_path)
     _user(vault, json.dumps({"identity": {"names": ["alice"], "emails": ["a@example.com"], "hosts": {}}}))
