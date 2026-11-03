@@ -62,5 +62,15 @@ def test_find_legacy_uses_start_folder_slug(tmp_path, vault):
     assert lib.find_legacy(root, start)["path"].endswith("SESSION_RESUME.md")
 
 
+def test_find_legacy_picks_up_an_older_sync_session_md(tmp_path, vault):
+    # some older /sync setups kept their resume state in the project's auto-memory as session.md (field report, #21)
+    root = tmp_path / "proj"
+    root.mkdir()
+    vdir = vault / "projects" / lib.slug(str(root)) / "memory"
+    vdir.mkdir(parents=True)
+    (vdir / "session.md").write_text("where we left off", encoding="utf-8")
+    assert lib.find_legacy(root, root)["path"] == str(vdir / "session.md")
+
+
 def test_find_legacy_none(tmp_path, vault):
     assert lib.find_legacy(tmp_path / "nothing", tmp_path / "nothing") is None

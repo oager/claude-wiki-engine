@@ -257,7 +257,7 @@ def user_file():
     """The per-user handoff, handoffs/_USER.md: identity, user-wide checks and conventions for every project."""
     p = handoff_path("_USER")
     res = {"path": str(p), "exists": p.is_file(), "profile": {}, "profile_error": None,
-           "size_kb": 0, "over_max": False}
+           "size_kb": 0, "over_max": False, "template": False}
     if not res["exists"]:
         return res
     text = p.read_text(encoding="utf-8")
@@ -267,7 +267,9 @@ def user_file():
     if isinstance(max_kb, bool) or not isinstance(max_kb, (int, float)):
         max_kb = 8
     return {**res, "profile": h["profile"], "profile_error": h["profile_error"],
-            "size_kb": round(kb, 1), "over_max": kb > max_kb}
+            "size_kb": round(kb, 1), "over_max": kb > max_kb,
+            # /sync writes a real `updated:` the first time it fills the file in; the placeholder means it never has
+            "template": h["meta"].get("updated", "").startswith("<")}
 
 
 def parse_utc(s):
@@ -280,10 +282,12 @@ def parse_utc(s):
 
 
 def find_legacy(root, cwd):
-    """Newest pre-redesign SESSION_RESUME.md for this project (repo copy or vault copy), or None."""
+    """Newest pre-redesign resume file for this project, or None: SESSION_RESUME.md (repo copy or vault copy), or the
+    session.md some older /sync setups kept in the project's auto-memory. Only read when no handoff exists."""
     paths = [Path(root) / ".claude" / "memory" / "SESSION_RESUME.md"]
     for p in dict.fromkeys([str(root), str(cwd)]):
-        paths.append(vault() / "projects" / slug(p) / "memory" / "SESSION_RESUME.md")
+        mem = vault() / "projects" / slug(p) / "memory"
+        paths += [mem / "SESSION_RESUME.md", mem / "session.md"]
     found = [p for p in paths if p.is_file()]
     if not found:
         return None
@@ -297,6 +301,10 @@ def find_legacy(root, cwd):
 def gh_json(args, timeout=8):
     """Run `gh <args>`; return (data, None) or (None, error). Never raises."""
     rc, out, err = RUN(["gh", *args], timeout=timeout)
+    if rc == 127:
+        return None, "gh not installed"
+    if rc == 4:  # gh's documented exit code for "authentication required"
+        return None, "gh not logged in (run: gh auth login)"
     if rc != 0:
         return None, (err or out).strip()[:200] or f"gh rc={rc}"
     try:

@@ -167,7 +167,7 @@ def prs_and_issues(gh):
            "issues_open": None if issues is None else len(issues)}
     errors = [e for e in (e1, e2) if e]
     if errors:
-        out["error"] = "; ".join(errors)
+        out["error"] = "; ".join(dict.fromkeys(errors))  # both calls fail the same way when gh is missing
     return out
 
 
@@ -552,7 +552,7 @@ def collect(cwd, project=None):
     u = lib.user_file()
     out["global"] = {**vstate, "clock": clock(), **(vault_changes(meta) if vstate["vault"] == "git"
                         else {"basis": None, "skills_changed": [], "knowledge_changed": []}), "claude_code": cc_version(),
-                     "plugins": plugin_updates(), "user": {k: u[k] for k in ("path", "exists", "profile_error", "size_kb", "over_max")},
+                     "plugins": plugin_updates(), "user": {k: u[k] for k in ("path", "exists", "profile_error", "size_kb", "over_max", "template")},
                      "user_checks": [] if u["profile_error"] else user_checks(u["profile"], ids)}
     if is_repo:
         out["git"] = {**git_local(root), **gh_info}
