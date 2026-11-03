@@ -187,7 +187,7 @@ def deploy_drift(root, profile, ids):
 def _drift_one(s, ids, last):
     unit = lib.safe_arg(s["unit"], "unit")
     if lib.host_target(s.get("host"), ids) is not None:
-        return {"unit": unit, "drift": None, "detail": "remote host — not checked"}
+        return {"unit": unit, "drift": None, "detail": "remote host, not checked"}
     scope = ["--user"] if s.get("scope", "user") == "user" else []
     rc, o, _ = lib.RUN(["systemctl", *scope, "show", "-p", "ActiveEnterTimestamp", "--timestamp=unix", "--", unit])
     m = re.search(r"@(\d+)", o)
@@ -710,7 +710,7 @@ def main(argv=None):
                 else sys.stdin.buffer.read().decode("utf-8-sig", "replace")
             )
             p = inbox.write_note(a.to, a.from_, a.subject, body)
-            res = {"path": str(p), **push([str(p)], f"note: {a.to} — {a.subject}"[:120])}
+            res = {"path": str(p), **push([str(p)], f"note: {a.to}: {a.subject}"[:120])}
         elif a.cmd == "inbox-done":
             refused = []
             staged = inbox.mark_done(a.files, refused)

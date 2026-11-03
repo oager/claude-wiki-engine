@@ -5,7 +5,7 @@ description: Consumer-impact sweep when data or interfaces change. Use whenever 
 type: skill
 ---
 
-# /ripple — Consumer-Impact Sweep
+# /ripple: Consumer-Impact Sweep
 
 One engine, two directions through the same map: **forward** (new data → who *should* consume
 it) and **reverse** (changed data → who *breaks or goes stale*). Plus a **discover** preamble
@@ -20,7 +20,7 @@ A stale map may make you slow; it must never make you wrong. Load the map as a w
 **live-verify every edge you act on** — grep the actual client fetches, loaders, SQL, prompt
 files, job definitions.
 
-## Step 0 — Resolve the project (every run)
+## Step 0: Resolve the project (every run)
 
 Ripple adapts to a project through three records. Find each in this order; whatever is missing,
 probe for it, ask once for what probes can't see, and write it in Step 6.
@@ -92,7 +92,7 @@ Every propagation incident happens at a seam. Know the failure mode before you s
 | Monitor / watchdog | grep the monitors that watch the producer (canaries, freshness checks, log-age checks) | Built from rows that EXIST, so a dead source reads OK (a zero day is absent, not zero); or watches a log path that froze when the producer moved — false alarm or false calm |
 | External producer (vendor/API) | the client code that calls it + its changelog / version header / schema | Upstream changes shape or semantics with no commit on your side; the only diff is in their release notes or in the payload |
 
-## Step 1 — Ground
+## Step 1: Ground
 
 1. Identify which seam(s) the change touches. One change often touches several.
 2. Live-verify each seam's consumer list by search (per the seam table). Add any consumer the map
@@ -107,7 +107,7 @@ Every propagation incident happens at a seam. Know the failure mode before you s
    patterns (e.g. "consume as a service, never re-embed"). A new edge that reverses a fresh
    retirement decision is a design bug, not a feature.
 
-## Step 2 — Impact table
+## Step 2: Impact table
 
 One row per consumer surface (including "none — checked"):
 
@@ -117,7 +117,7 @@ One row per consumer surface (including "none — checked"):
 
 Impact verdicts carry evidence (file:line from Step 1's searches), not map hearsay.
 
-## Step 3 — Gate each row
+## Step 3: Gate each row
 
 - **Coupling**: does the fix/feature respect the sanctioned consumption pattern? Prefer the
   loosest edge that works (published state file > HTTP client > direct DB read > embedding).
@@ -128,14 +128,14 @@ Impact verdicts carry evidence (file:line from Step 1's searches), not map hears
   repo allows it; authority path (anything that decides, trades, deploys, bills or moves money) or
   unsure → PR/MR only; partner- or vendor-owned surface → flag it, don't touch.
 
-## Step 4 — Present & execute
+## Step 4: Present & execute
 
 Present the gated table with a recommendation per row; let the user pick (one question per real
 fork). Execute chosen rows: small advisory edits → direct, matching surrounding style; multi-file
 builds → a build pipeline skill if installed (e.g. `/tiered-build`), else plan, then build with
 tests. Never execute partner-owned rows.
 
-## Step 5 — Verify (per seam type — this list is the paid-for part)
+## Step 5: Verify (per seam type; this list is the paid-for part)
 
 - Endpoint changed → find its clients and **exercise them** (render/DOM check, not HTTP 200).
 - New LLM input → its prompt-contract paragraph exists and matches the actual fields. Input
@@ -153,7 +153,7 @@ tests. Never execute partner-owned rows.
   (densify the calendar: a missing period counts as zero).
 - Restarted a service → poll the port; "unit active" ≠ port bound.
 
-## Step 6 — Bank
+## Step 6: Bank
 
 - **Map self-heal**: add every consumer/seam discovered that wasn't in the map; correct anything
   wrong; fill profile fields you had to probe or ask for. Commit under the host repo's change gate
@@ -178,7 +178,7 @@ tests. Never execute partner-owned rows.
   `sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" ripple-done`. It clears `/sync`'s
   "seams changed, not rippled" warning for this session's changes.
 
-## Works with (all optional — ripple runs standalone)
+## Works with (all optional; ripple runs standalone)
 
 - **Session tools** (`/preflight`, `/sync`): their handoff Profile is the personal layer (Step 0.3). `/preflight`
   reads the map's watermark and shows a `Ripple:` line when it is stale; `/sync` warns when files matching the

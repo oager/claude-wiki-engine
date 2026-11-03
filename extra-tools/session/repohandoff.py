@@ -19,7 +19,7 @@ def render(private_text, author, now=None):
     h = lib.parse_handoff(private_text)
     now = now or dt.datetime.now(dt.UTC)
     parts = [f"---\nupdated: {now:%Y-%m-%dT%H:%MZ}\nupdated_by: {author}\n---\n"
-             "# Handoff (shared)\n\n_Written by /sync from its author's handoff; edits here are overwritten — "
+             "# Handoff (shared)\n\n_Written by /sync from its author's handoff; edits here are overwritten, so "
              "leave notes in a PR or issue instead._\n"]
     parts += [f"## {s}\n{h['sections'].get(s, '').strip() or 'none'}\n" for s in PUBLIC]
     return "\n".join(parts)

@@ -151,6 +151,18 @@ class SessionExtrasTest(unittest.TestCase):
                         "python3 <config>/tools/session"):
                 self.assertNotIn(bad, text, p)
 
+    def test_session_report_templates_and_headings_have_no_em_dash(self):
+        # the model copies these literally into reports and handoff files (field report #21, A3)
+        for name in ("preflight", "sync", "ripple"):
+            text = (self.inst.ENGINE / "extra-skills" / name / "SKILL.md").read_text(encoding="utf-8")
+            in_fence = False
+            for n, line in enumerate(text.splitlines(), 1):
+                if line.startswith("```"):
+                    in_fence = not in_fence
+                    continue
+                if in_fence or line.startswith("#"):
+                    self.assertNotIn("\u2014", line, f"{name}/SKILL.md:{n}")
+
     def test_existing_user_file_is_kept(self):
         (self.tmp / "handoffs").mkdir()
         (self.tmp / "handoffs/_USER.md").write_text("mine", encoding="utf-8")
@@ -922,3 +934,48 @@ class SessionEndHookTest(unittest.TestCase):
 
     def test_hook_is_registered_under_session_end(self):
         self.assertIn(("session-end.cjs", "SessionEnd", ""), load_installer().HOOKS)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class WikiSyncNudgeTest(unittest.TestCase):
+    """hooks/wiki-sync-nudge.cjs: nudges once per session, and only after the session edited a file (#21, C2)."""
+
+    EDIT = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Edit","input":{}}]}}\n'
+    # a read-only call whose text merely mentions "name":"Edit" (JSON-escaped inside the string) must not count
+    BASH = ('{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash",'
+            '"input":{"command":"grep \\"name\\":\\"Edit\\" x"}}]}}\n')
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def _run(self, payload):
+        env = {**os.environ, "TMPDIR": str(self.tmp), "TEMP": str(self.tmp), "TMP": str(self.tmp)}
+        env.pop("WIKI_SYNC_NUDGE", None)
+        return subprocess.run(["node", str(REPO / "hooks" / "wiki-sync-nudge.cjs")], input=json.dumps(payload),
+                              capture_output=True, text=True, encoding="utf-8", env=env, timeout=30)
+
+    def _transcript(self, *lines):
+        p = self.tmp / "t.jsonl"
+        p.write_text("".join(lines), encoding="utf-8")
+        return str(p)
+
+    def test_read_only_session_is_not_nudged_and_keeps_its_nudge(self):
+        payload = {"session_id": "s-readonly", "transcript_path": self._transcript(self.BASH)}
+        self.assertEqual(self._run(payload).stdout, "")
+        self._transcript(self.BASH, self.EDIT)  # later in the same session a file is edited
+        self.assertIn('"decision":"block"', self._run(payload).stdout)
+
+    def test_session_with_an_edit_is_nudged_once(self):
+        payload = {"session_id": "s-edit", "transcript_path": self._transcript(self.EDIT)}
+        self.assertIn('"decision":"block"', self._run(payload).stdout)
+        self.assertEqual(self._run(payload).stdout, "")
+
+    def test_without_a_readable_transcript_it_nudges_as_before(self):
+        self.assertIn('"decision":"block"', self._run({"session_id": "s-none"}).stdout)
+        missing = {"session_id": "s-missing", "transcript_path": str(self.tmp / "gone.jsonl")}
+        self.assertIn('"decision":"block"', self._run(missing).stdout)
+
+    def test_stop_hook_active_never_nudges(self):
+        payload = {"session_id": "s-loop", "transcript_path": self._transcript(self.EDIT), "stop_hook_active": True}
+        self.assertEqual(self._run(payload).stdout, "")

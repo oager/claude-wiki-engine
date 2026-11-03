@@ -496,11 +496,11 @@ def run_checks(type_, root, profile, ids):
         for u in matched:
             c = service_check(u, ids, "guessed")
             if c["status"] != "ok":
-                c["status"], c["detail"] = "unknown", f"{c['detail']} (guessed match — unverified)"
+                c["status"], c["detail"] = "unknown", f"{c['detail']} (guessed match, unverified)"
             checks.append(c)
         if not matched:
             checks.append(_check("guessed", "service", f"*{tok}*", "unknown",
-                                 "no unit matched the repo name — unverified; declare services in the Profile"))
+                                 "no unit matched the repo name, unverified; declare services in the Profile"))
     checks += _profile_checks(profile, "health", lambda h: health_check(h, ids))
     checks += _profile_checks(profile, "ports", lambda p: port_check(p, ids))
     checks += _profile_checks(profile, "queues", lambda q: queue_check(q, root))

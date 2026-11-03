@@ -170,9 +170,13 @@ run, repeat/idempotent calls don't clobber it, and unrelated user keys are prese
   up under `<config>/.wikibak/` before it is replaced. It also
   **re-wires `settings.json` (self-healing)**: a stale/broken hook command from an older install —
   e.g. a pre-fix Windows backslash path — is repaired in place, not left behind.
-- The `Stop` nudge fires **once per session** (a tmp flag keyed on the session id, or the transcript
-  path when no id is present), is loop-safe, and lets Claude no-op on a routine session; disable with `WIKI_SYNC_NUDGE=off`.
+- The `Stop` nudge fires **once per session**, at the first stop after a file edit, so a read-only session (a lone
+  `/preflight`) is never nudged. It is loop-safe (a tmp flag keyed on the session id, or the transcript path when no id
+  is present) and lets Claude no-op on a routine session; disable with `WIKI_SYNC_NUDGE=off`.
 - The `wiki-index-check` hook is **config-adaptive**: it finds the wiki by the nearest `MEMORY.md`
   above the written file, so it works for a global `~/.claude/memory`, a repo-vendored wiki, a
   project-scoped `.claude/projects/<slug>/memory`, or any custom `--memory` path — no fixed location.
+- **Fact-forcing hooks** (e.g. the ECC plugin's GateGuard, a `PreToolUse` hook) can deny the first Bash call of a
+  session until the agent states its purpose. That first call is `/preflight`'s collector, so expect one extra round
+  trip there; nothing in the engine needs changing.
 - Roadmap: submodule mode; more optional skills (dictionary / postmortem).
