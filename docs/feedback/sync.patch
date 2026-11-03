@@ -1,0 +1,114 @@
+--- /dev/fd/63	2026-10-29 14:40:11.000000000 -0400
++++ /dev/fd/62	2026-10-29 14:40:11.000000000 -0400
+@@ -12,7 +12,7 @@
+ ## Step 0 — Collect
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
++python ~/.claude/tools/session/close.py --cwd "$PWD"
+ ```
+ 
+ One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `sessions {me, registered, focus,
+@@ -38,8 +38,8 @@
+ Re-read the handoff's `updated` immediately before writing it; if it changed since Step 0, merge again.
+ **Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
+ session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
+-(`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
+-is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first (it prints `adopted: <id>`
++(`python ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
++is false, run `python ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first (it prints `adopted: <id>`
+ when it took over the entry a desktop Code-tab `/clear` left behind: say `focus carried over from <id8>` in the report),
+ then set the focus if it is still empty.
+ When naming another session, show `<id>/<pid>` when two ids match (a fork may keep its parent's id; a desktop Code-tab fork gets its own).
+@@ -49,6 +49,11 @@
+ log paths → Profile; the dated diary → Last session (trim archives the old part); "What NOT to do" and procedures →
+ Standing notes. Leave the legacy file where it is.
+ 
++**Local addition, `session.md`:** if `<project-memory>/session.md` exists (the resume state the old `/sync` wrote),
++convert it too: What we were working on and Where we left off → Next up and Last session; Open questions → Open items;
++Context that won't be obvious → Standing notes. Then delete that file and its `MEMORY.md` index line so `/preflight`
++cannot read a stale copy, and say so in the report. This `/sync` no longer writes `session.md`; the handoff replaces it.
++
+ | Section | Rule |
+ |---|---|
+ | Next up | **Rewrite.** Max 5, ranked; item 1 = where the next session starts. From this session's work, the previous Next up and Open items. |
+@@ -63,13 +68,13 @@
+ Verify the Profile still parses (must print `"profile_error": null`):
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py check-profile <handoff.path>
++python ~/.claude/tools/session/close.py check-profile <handoff.path>
+ ```
+ 
+ ### Step 1a — Trim
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py trim <handoff.path>
++python ~/.claude/tools/session/close.py trim <handoff.path>
+ ```
+ 
+ Moves Last session entries older than 14 days into `<key>.archive.md` (created if needed). `over_100kb: true` means an
+@@ -81,7 +86,7 @@
+ move the triaged notes and add every path the command prints under `stage` to the Step 3 push:
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py inbox-done --files <note paths…>
++python ~/.claude/tools/session/close.py inbox-done --files <note paths…>
+ ```
+ Notes listed under `already_done` were triaged by another session: nothing to do. Paths under `refused` are not
+ inbox notes (a folder, a `done/` entry, a symlink, a non-`.md` file, or a path outside `handoffs/inbox/<key>/`) and
+@@ -91,7 +96,7 @@
+ ### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py repo-handoff --cwd "$PWD"
++python ~/.claude/tools/session/close.py repo-handoff --cwd "$PWD"
+ ```
+ `written: true` → the file is committed with the project's normal flow (Step 4 "and ship", or the next PR). The
+ result carries `uncommitted` and `ignored`, which Warnings reports (see Step 1). Each /sync overwrites the file from
+@@ -187,13 +192,18 @@
+ ## Step 3 — Push vault
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py push --message "sync: <key> session <YYYY-MM-DD>" \
+-  --files <handoff.path> [<archive path>] <every memory / wiki file THIS session changed>
++python ~/.claude/tools/session/close.py push --message "sync: <key> session <YYYY-MM-DD>" \
++  --files <every memory / wiki file THIS session changed>
+ ```
+ 
+-`<archive path>` = the archive file's full path, next to the handoff (`<handoffs dir>/<key>.archive.md`, i.e. Step 1a's
+-`archive` value), listed only if trim created or changed it. Never a bare name: relative paths resolve against the
+-current folder and fail the all-or-nothing push.
++**Local override (this vault is the private `claude-config` GitHub repo, deny-by-default `.gitignore`):**
++- Never list anything under `<config>/handoffs/` (the handoff, its archive, `_USER.md`, inbox notes), even where Steps
++  1a, 1b and 1d say to add it. Handoffs hold case numbers and customer detail and are gitignored, so listing one fails
++  the whole push with `stage_failed`. Handoffs stay local to this machine.
++- Never list `projects/*/memory/case_*.md` (customer data, also gitignored: same `stage_failed`).
++- Paths must be full paths, never bare names: relative paths resolve against the current folder and fail the
++  all-or-nothing push.
++- No memory or wiki file changed this session: skip the push and report `Vault: handoff local only`.
+ 
+ It takes the `.sync.lock` mutex (stale after 5 min), stages **only** the listed files with `add -f` (new files under
+ `projects/*/memory/` are silently skipped without `-f`), makes a pathspec commit so other sessions' staged work stays
+@@ -234,7 +244,7 @@
+ ### Step 3b — Refresh this session's registry entry
+ 
+ ```bash
+-python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh
++python ~/.claude/tools/session/close.py --cwd "$PWD" session refresh
+ ```
+ It records the handoff version this session just wrote, so a later concurrent /sync is detected; it is local and
+ never committed.
+@@ -249,10 +259,10 @@
+ ## Step 5 — Report
+ 
+ ```
+-SYNC — <key> — <local time>
++SYNC: <key>, <local time>
+ Handoff:  <handoff.path> · clean close ✓ | warnings: <list>
+ Profile:  <checks added/changed | unchanged>
+-Vault:    pushed <sha> | nothing to commit | deferred (<reason>)
++Vault:    pushed <sha> | nothing to commit | deferred (<reason>) | handoff local only
+ ```
+ 
+ ## Gotchas

@@ -1,0 +1,53 @@
+--- /dev/fd/63	2026-10-29 14:40:10.000000000 -0400
++++ /dev/fd/62	2026-10-29 14:40:10.000000000 -0400
+@@ -13,7 +13,7 @@
+ ## Step 1: Collect (one call)
+ 
+ ```bash
+-python3 ~/.claude/tools/session/open.py --cwd "$PWD"     # Windows Git Bash: python
++python ~/.claude/tools/session/open.py --cwd "$PWD"
+ ```
+ 
+ One JSON object: `identity`, `handoff`, `global`, `inbox`, `git`, `collab`, `repo_handoff`, `sessions`, `type`,
+@@ -50,6 +50,15 @@
+ - neither: no handoff. Build a provisional Next up from `git` (dirty, unpushed, PRs), queue checks and failing
+   checks, label it **(guessed)**, and say `/sync` at session end will create the handoff.
+ 
++## Step 2b: Project memory (local addition)
++
++The project's auto-memory directory (see "auto memory" in the system prompt; its `MEMORY.md` is already loaded) holds
++this user's accumulated rules and project facts. The handoff does not replace them.
++- Read every `feedback_*.md` there (small) and apply them for the rest of this flow. They feed the `Rules:` line.
++- Read `session.md` there only when `handoff.exists` is false: it is the resume state the old `/sync` wrote. Label it
++  `legacy session.md, N days old`; the first `/sync` converts it into the handoff.
++- Open `project_*.md` or `reference_*.md` pages only when Next up or the handoff's Standing notes touch their topic.
++
+ ## Step 3: Global knowledge
+ 
+ From `global.knowledge_changed`, open only entries whose path or commit subject relates to this project's key,
+@@ -81,7 +90,7 @@
+   `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`.
+   `sessions.focus` empty AND (`sessions.others` non-empty OR the user's first request names a clear topic): take a
+   one-line focus from that request (or ask for one) and run
+-  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When others exist, list this
++  `python ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When others exist, list this
+   session's lane (`[<focus>]` items) first in Next up.
+ - `sessions.reason` set (no session id / registry not writable): one line on the Health line; the rest works as before.
+ 
+@@ -95,7 +104,7 @@
+ Omit a line with nothing to say, except Handoff, Health and Next up.
+ 
+ ```
+-PREFLIGHT — <key> (<type>) — <local time>
++PREFLIGHT: <key> (<type>), <local time>
+ ━━━━━━━━━━━━━━━━━━━━━━
+ Handoff:  <age> (<updated_by>) · clean close | N warnings | legacy, N days | none (agenda guessed)
+ Warnings: <from last close>                        (only if not "none")
+@@ -107,6 +116,7 @@
+ Global:   <skills changed · relevant knowledge · Claude Code relaunch · plugins differing from catalog>
+ Inbox:    <N notes: subjects>                      (only if any)
+ User:     <user checks: quiet one line | loud items>
++Rules:    <3 to 5 working rules from this project's feedback_*.md memories>   (Step 2b)
+ ⚠ Vault:  <stuck merge | pull failed | pull skipped: a /sync push was running — handoff may be one sync behind, re-run /preflight>   (only if any; the last when global.pull starts with "skipped (a /sync push" or "skipped (cannot take the vault lock")
+ Vault:    local only (not in git)                  (only when global.vault == "local")
+ Vault:    git, no remote: not synced across machines (only when global.pull is "skipped (no remote)", "skipped (no upstream …)" or "skipped (detached HEAD)" — say which)
