@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -812,6 +813,61 @@ class ReviewFixesTest(unittest.TestCase):
     def test_update_installs_missing_core_skill(self):
         self.update(skills=["wiki-sync"])
         self.assertTrue(self.inst.is_engine_skill(self.skills / "wiki-sync"))
+
+    # --- --force-skills backups + read-only files (Windows field report, PR #21) ---
+
+    def test_force_skills_backs_up_own_skill_outside_skills_dir(self):
+        d = self.skills / "doc-review"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: doc-review\n---\nmy own review\n", encoding="utf-8")
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[], force_skills=True)).execute()
+        self.assertTrue(self.inst.is_engine_skill(d))
+        # a skills/<name>.wikibak/ dir holds a SKILL.md, so Claude Code would load it as a second copy
+        self.assertFalse(list(self.skills.glob("*.wikibak*")))
+        baks = list((self.tmp / ".wikibak/skills").glob("doc-review-*"))
+        self.assertEqual(len(baks), 1)
+        self.assertIn("my own review", (baks[0] / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_force_skills_over_unchanged_engine_copy_makes_no_backup(self):
+        cfg = self.cfg(skills=["doc-review"], extra_skills=[])
+        self.inst.build_plan(cfg).execute()
+        self.inst.build_plan({**cfg, "force_skills": True}).execute()
+        self.assertFalse(list(self.skills.glob("*.wikibak*")))
+        self.assertFalse((self.tmp / ".wikibak/skills").exists())
+
+    def test_force_skills_replaces_a_symlinked_skill_without_touching_its_target(self):
+        mine = self.tmp / "my-skills/doc-review"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("---\nname: doc-review\n---\nmine\n", encoding="utf-8")
+        self.skills.mkdir()
+        (self.skills / "doc-review").symlink_to(mine, target_is_directory=True)
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[], force_skills=True)).execute()
+        d = self.skills / "doc-review"
+        self.assertFalse(d.is_symlink())
+        self.assertTrue(self.inst.is_engine_skill(d))
+        self.assertIn("mine", (mine / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_read_only_file_in_installed_skill_is_replaced(self):
+        # Windows cannot delete a read-only file, and copy2 carries the bit over from a read-only engine checkout
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[])).execute()
+        md = self.skills / "doc-review/SKILL.md"
+        md.write_text(md.read_text(encoding="utf-8") + "\nMY TWEAK\n", encoding="utf-8")
+        md.chmod(stat.S_IREAD)
+        self.update(skills=["doc-review"])
+        self.assertNotIn("MY TWEAK", md.read_text(encoding="utf-8"))
+
+    @unittest.skipIf(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                     "needs POSIX as non-root: there a read-only dir blocks deleting its files")
+    def test_undeletable_skill_stops_with_a_clear_message(self):
+        self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[])).execute()
+        d = self.skills / "doc-review"
+        d.chmod(0o500)
+        self.addCleanup(d.chmod, 0o700)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            self.inst.build_plan(self.cfg(skills=["doc-review"], extra_skills=[], force_skills=True)).execute()
+        self.assertIn("[fail] copy skills/doc-review", out.getvalue())
+        self.assertIn("close Claude Code", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -188,7 +189,11 @@ class Plan:
             if self.dry_run:
                 print(f"  [dry-run] {verb} {detail}")
                 continue
-            res = fn()
+            try:
+                res = fn()
+            except OSError as e:  # e.g. a file Windows keeps locked; stop here instead of a traceback
+                print(f"  [fail] {verb} {detail}: {e}")
+                raise SystemExit(1) from e
             if isinstance(res, Skipped):
                 print(f"  [warn] {res}")
             else:
@@ -200,10 +205,29 @@ class Plan:
 _RUNTIME_DIRS = {"__pycache__", ".pytest_cache"}  # written by running the code, never engine or user content
 
 
+def _rmtree(path: Path):
+    """shutil.rmtree that clears a read-only bit and retries once: Windows cannot delete a read-only file, and copy2
+    carries that bit over from a read-only engine checkout. A second failure raises an OSError naming the path."""
+    def retry(func, p, _exc):
+        os.chmod(p, os.stat(p).st_mode | stat.S_IWRITE)
+        func(p)
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=retry)
+        else:
+            shutil.rmtree(path, onerror=retry)
+    except OSError as e:
+        raise OSError(f"could not remove {path} ({e}); close Claude Code or any other program using files "
+                      "there, then run the installer again") from e
+
+
 def copy_tree(src: Path, dst: Path):
-    """Replace dst with a copy of src, minus runtime caches (bytecode/pytest caches from the engine checkout)."""
-    if dst.exists():
-        shutil.rmtree(dst)
+    """Replace dst with a copy of src, minus runtime caches (bytecode/pytest caches from the engine checkout).
+    A symlinked dst is only unlinked: its target is never touched."""
+    if dst.is_symlink():
+        dst.unlink()
+    elif dst.exists():
+        _rmtree(dst)
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*_RUNTIME_DIRS))
 
 
@@ -213,7 +237,7 @@ def link_or_copy(src: Path, dst: Path) -> str:
         if dst.is_symlink() or dst.is_file():
             dst.unlink()
         else:
-            shutil.rmtree(dst)
+            _rmtree(dst)
     try:
         dst.symlink_to(src, target_is_directory=src.is_dir())
         return "symlink"
@@ -222,23 +246,8 @@ def link_or_copy(src: Path, dst: Path) -> str:
         return "copy (symlink unavailable)"
 
 
-def _backup(path: Path):
-    """Back up an existing file/dir before overwrite (.wikibak); best-effort, never raises."""
-    if not path.exists() or path.is_symlink():
-        return
-    bak = Path(str(path) + ".wikibak")
-    try:
-        if path.is_dir():
-            if not bak.exists():
-                shutil.copytree(path, bak)
-        else:
-            shutil.copy2(path, bak)
-    except Exception:
-        pass
-
-
 def _versioned_backup(config_base: Path, path: Path) -> bool:
-    """Timestamped backup OUTSIDE `skills/` -- unlike `_backup`'s single `.wikibak`, this keeps
+    """Timestamped backup OUTSIDE `skills/` -- unlike a single `<name>.wikibak` copy, this keeps
     every prior version (so a later update doesn't silently overwrite the only backup) and never
     lands under `skills/` (a `<name>.wikibak/` dir there could be picked up as a duplicate skill).
     Copies into `<config_base>/.wikibak/<relative path>-<UTC timestamp>`. Never raises: returns True when
@@ -278,6 +287,15 @@ def _replace_backed_up(config_base: Path, dst: Path, same, replace):
         return Skipped(f"backup failed for {dst} - left it unchanged, not replaced "
                        f"(check that {config_base / '.wikibak'} is a writable directory)")
     replace()
+
+
+def _force_replace(config_base: Path, src: Path, dst: Path, replace):
+    """--force-skills: replace dst, backing it up under <config>/.wikibak/ first when it differs from the engine's.
+    A symlink is only unlinked (its target stays), so it needs no backup."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink():
+        return replace()
+    return _replace_backed_up(config_base, dst, lambda: _same_tree(src, dst), replace)
 
 
 def read_text_keep_eol(path: Path) -> tuple[str, str]:
@@ -767,10 +785,10 @@ def build_plan(cfg: dict) -> Plan:
             continue
         if mode == "symlink":
             plan.add("link", f"{name} -> {dst}",
-                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), link_or_copy(s, d)))
+                     lambda s=src, d=dst: _force_replace(base, s, d, lambda: link_or_copy(s, d)))
         else:
             plan.add("copy", f"skills/{name} -> {dst}",
-                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+                     lambda s=src, d=dst: _force_replace(base, s, d, lambda: copy_tree(s, d)))
 
     # optional extra skills - same skip-if-exists safety as the core set
     extras = cfg.get("extra_skills") or []
@@ -797,10 +815,10 @@ def build_plan(cfg: dict) -> Plan:
             continue
         if mode == "symlink":
             plan.add("link", f"{name} (extra) -> {dst}",
-                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), link_or_copy(s, d)))
+                     lambda s=src, d=dst: _force_replace(base, s, d, lambda: link_or_copy(s, d)))
         else:
             plan.add("copy", f"extra-skills/{name} -> {dst}",
-                     lambda s=src, d=dst: (d.parent.mkdir(parents=True, exist_ok=True), _backup(d), copy_tree(s, d)))
+                     lambda s=src, d=dst: _force_replace(base, s, d, lambda: copy_tree(s, d)))
 
     if session_wanted and not conflicts:
         session_plan(plan, base, update=False, claude_md=cfg["claude_md"])
