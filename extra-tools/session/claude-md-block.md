@@ -4,5 +4,5 @@ follow their SKILL.md by hand; ask the user to type them. Live state per project
 user-wide conventions: `<config>/handoffs/_USER.md`. `SESSION_RESUME.md` is legacy (converted by the first /sync).
 Never edit `_USER.md` mid-session: a general rule the user states is noted and left for `/sync` to propose (its yes/no
 gate).
-To hand something to another session or machine, write a note: `python3 <config>/tools/session/close.py note
+To hand something to another session or machine, write a note: `sh <config>/tools/session/run.sh close.py note
 --to <key> --from <you> --subject "..."` (also when a cross-session message fails because the target has ended).

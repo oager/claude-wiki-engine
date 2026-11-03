@@ -135,10 +135,21 @@ class SessionExtrasTest(unittest.TestCase):
     def test_preflight_brings_tools_templates_user_file_and_block(self):
         self.inst.build_plan(self.cfg()).execute()
         self.assertTrue((self.tmp / "tools/session/open.py").is_file())
+        self.assertTrue((self.tmp / "tools/session/run.sh").is_file())
         self.assertTrue((self.tmp / "tools/session/.engine").is_file())
         self.assertTrue((self.tmp / "handoffs/_TEMPLATE.md").is_file())
         self.assertTrue((self.tmp / "handoffs/_USER.md").is_file())
         self.assertIn(self.inst.SESSION_START, (self.tmp / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_session_tools_are_always_called_through_run_sh(self):
+        # python3 is the Microsoft Store stub on stock Windows and absent on some Linux: run.sh picks a working one
+        docs = [*self.inst.ENGINE.glob("extra-skills/*/SKILL.md"), *self.inst.ENGINE.glob("claude-md/*.md"),
+                self.inst.ENGINE / "README.md", self.inst.ENGINE / "extra-tools/session/claude-md-block.md"]
+        for p in docs:
+            text = p.read_text(encoding="utf-8")
+            for bad in ("python3 ~/.claude/tools/session", "python ~/.claude/tools/session",
+                        "python3 <config>/tools/session"):
+                self.assertNotIn(bad, text, p)
 
     def test_existing_user_file_is_kept(self):
         (self.tmp / "handoffs").mkdir()

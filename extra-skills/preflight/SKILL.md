@@ -13,8 +13,11 @@ Design: the "Session handoff" section of the claude-wiki-engine README.
 ## Step 1: Collect (one call)
 
 ```bash
-python3 ~/.claude/tools/session/open.py --cwd "$PWD"     # Windows Git Bash: python
+sh ~/.claude/tools/session/run.sh open.py --cwd "$PWD"
 ```
+
+`run.sh` runs the tool with the first working Python 3.11+ (`python3`, else `python`), so the same commands work
+on Windows. Exit 127 means it found neither: say so and stop.
 
 One JSON object: `identity`, `handoff`, `global`, `inbox`, `git`, `collab`, `repo_handoff`, `sessions`, `type`,
 `checks`, and `ripple` (only when the project has a `/ripple` consumer map). It always exits 0; a failed
@@ -108,7 +111,7 @@ other clones are counted against their own upstream (`ripple.branch` is this pro
   `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`.
   `sessions.focus` empty AND (`sessions.others` non-empty OR the user's first request names a clear topic): take a
   one-line focus from that request (or ask for one) and run
-  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<focus>"`. When others exist, list this
+  `sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session focus "<focus>"`. When others exist, list this
   session's lane (`[<focus>]` items) first in Next up.
 - `sessions.reason` set (no session id / registry not writable): one line on the Health line; the rest works as before.
 

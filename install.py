@@ -491,8 +491,8 @@ def session_plan(plan: Plan, base: Path, update: bool, claude_md: bool):
     """What /preflight and /sync need besides SKILL.md: tools/session, handoff templates, _USER.md, a CLAUDE.md block."""
     if base.resolve() != home_claude().resolve():
         # The skills hard-code the tool path; lib.vault() reads CLAUDE_VAULT (default ~/.claude) for handoffs only.
-        plan.note(f"the session skills run python3 ~/.claude/tools/session/... by that fixed path, so for this "
-                  f"install they work only after you edit that path (also written $HOME/.claude/tools/session) "
+        plan.note(f"the session skills run sh ~/.claude/tools/session/run.sh <tool> by that fixed path, so for this "
+                  f"install they work only after you edit that path "
                   f"to {base / 'tools' / 'session'} in skills/preflight and skills/sync; the tools keep handoffs "
                   f"in ~/.claude/handoffs unless CLAUDE_VAULT is set (set it to {base} in the environment Claude "
                   "Code runs in - it moves the vault only, not the tool path)")
