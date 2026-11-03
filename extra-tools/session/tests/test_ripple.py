@@ -150,6 +150,28 @@ def test_profile_map_path_and_clone(repo, tmp_path):
     assert b["repos"][1]["unswept"] is None  # abc1234 is not a commit in that clone: unknown
 
 
+def test_ripple_branch_applies_to_the_project_not_partner_clones(repo, tmp_path):
+    other = tmp_path / "other"
+    sh("git", "clone", "-q", str(repo), str(other))  # a partner clone tracking origin/main: no feature/x there
+    _write_map(repo, _sha(repo), "2026-08-18", commit_it=False)
+    path = repo / "docs/DATA_CONSUMERS.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("abc1234", _sha(other)), encoding="utf-8")
+    sh("git", "add", "docs", cwd=repo)
+    sh("git", "commit", "-qm", "map", cwd=repo)
+    sh("git", "update-ref", "refs/remotes/origin/feature/x", "HEAD", cwd=repo)  # the services run feature/x
+    prof = {"ripple": {"branch": "feature/x", "clones": {"alice/other-repo": str(other)}}}
+    b = rm.watermark_block(repo, prof, today=dt.date(2026, 11, 1))
+    assert b["repos"][0]["unswept"] == 1 and b["repos"][1]["unswept"] == 0  # was None before: a silent unknown
+    assert "error" not in b["repos"][0] and "error" not in b["repos"][1]
+
+
+def test_wrong_ripple_branch_is_an_error_not_a_silent_unknown(repo):
+    _write_map(repo, _sha(repo), "2026-08-18")
+    _origin_here(repo)
+    b = rm.watermark_block(repo, {"ripple": {"branch": "nope"}}, today=dt.date(2026, 11, 1))
+    assert b["repos"][0]["unswept"] is None and b["repos"][0]["error"] == "origin/nope not in clone"
+
+
 def test_bad_profile_is_an_error_not_a_crash(repo):
     assert rm.watermark_block(repo, {"ripple": "x"}) == {"error": "ripple is not an object", "stale": False}
 

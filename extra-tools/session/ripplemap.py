@@ -106,12 +106,14 @@ def _clone_for(name, root, cfg):
     return Path(root) if tail in (Path(root).name, origin.split("/")[-1] if origin else None) else None
 
 
-def _unswept(clone, sha, cfg):
+def _unswept(clone, sha, up):
+    """(count, error). The count is None when unknown; error says why when the cause is a setup problem."""
     if lib.git(clone, "cat-file", "-e", f"{sha}^{{commit}}") is None:
-        return None
-    up = _upstream(clone, cfg)
-    n = lib.git(clone, "rev-list", "--count", f"{sha}..{up}") if up else None
-    return int(n) if n and n.isdigit() else None
+        return None, None  # the swept commit is not fetched here: unknown, not a setup problem
+    if not up:
+        return None, "no upstream branch"
+    n = lib.git(clone, "rev-list", "--count", f"{sha}..{up}")
+    return (int(n), None) if n and n.isdigit() else (None, f"{up} not in clone")
 
 
 def watermark_block(root, profile, today=None):
@@ -136,7 +138,12 @@ def watermark_block(root, profile, today=None):
         d = lib.parse_utc(r["date"]) if r["date"] else None
         r["age_days"] = (today - d.date()).days if d else None
         clone = _clone_for(r["repo"], root, cfg) if r["sha"] else None
-        r["unswept"] = _unswept(clone, r["sha"], cfg) if clone and clone.is_dir() else None
+        r["unswept"] = None
+        if clone and clone.is_dir():
+            own = clone.resolve() == Path(root).resolve()  # ripple.branch is this project's; partner clones use their @{u}
+            r["unswept"], err = _unswept(clone, r["sha"], _upstream(clone, cfg if own else {}))
+            if err:
+                r["error"] = err
         r["stale"] = r["sha"] is None or r["age_days"] is None or r["age_days"] > STALE_DAYS
     ages = [r["age_days"] for r in rows if r["age_days"] is not None]
     return {**out, "stale": any(r["stale"] for r in rows), "oldest_days": max(ages) if ages else None,
