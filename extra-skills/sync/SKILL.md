@@ -12,8 +12,11 @@ Update all persistent memory and status files for the current project, then push
 ## Step 0 — Collect
 
 ```bash
-python3 ~/.claude/tools/session/close.py --cwd "$PWD"     # Windows Git Bash: python
+sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD"
 ```
+
+`run.sh` runs the tool with the first working Python 3.11+ (`python3`, else `python`); exit 127 means neither was
+found.
 
 One JSON object: `identity`, `handoff {path, exists, size_kb}`, `handoff_updated`, `sessions {me, registered, focus,
 others}`, `updated_seen`, `legacy`, `git {dirty, dirty_count, unpushed, no_pr_branches, ci_pending}`,
@@ -38,8 +41,8 @@ handoff exists → **merge** (the safe direction). Never rewrite a handoff you c
 Re-read the handoff's `updated` immediately before writing it; if it changed since Step 0, merge again.
 **Lanes:** while `sessions.others` is non-empty, prefix each Next up item this session adds with `[<focus>]` (this
 session's focus) and leave items in other lanes untouched. `sessions.focus` empty → set a focus first
-(`python3 ~/.claude/tools/session/close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
-is false, run `python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh` first (it prints `adopted: <id>`
+(`sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session focus "<text>"`), then tag. If `sessions.registered`
+is false, run `sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session refresh` first (it prints `adopted: <id>`
 when it took over the entry a desktop Code-tab `/clear` left behind: say `focus carried over from <id8>` in the report),
 then set the focus if it is still empty.
 When naming another session, show `<id>/<pid>` when two ids match (a fork may keep its parent's id; a desktop Code-tab fork gets its own).
@@ -65,13 +68,13 @@ Standing notes. Leave the legacy file where it is.
 Verify the Profile still parses (must print `"profile_error": null`, and `"ripple_error": null` when the Profile has a `ripple` key):
 
 ```bash
-python3 ~/.claude/tools/session/close.py check-profile <handoff.path>
+sh ~/.claude/tools/session/run.sh close.py check-profile <handoff.path>
 ```
 
 ### Step 1a — Trim
 
 ```bash
-python3 ~/.claude/tools/session/close.py trim <handoff.path>
+sh ~/.claude/tools/session/run.sh close.py trim <handoff.path>
 ```
 
 Moves Last session entries older than 14 days into `<key>.archive.md` (created if needed). `over_100kb: true` means an
@@ -83,7 +86,7 @@ For every note `/preflight` listed: act on it, or turn it into a Next up item th
 move the triaged notes and add every path the command prints under `stage` to the Step 3 push:
 
 ```bash
-python3 ~/.claude/tools/session/close.py inbox-done --files <note paths…>
+sh ~/.claude/tools/session/run.sh close.py inbox-done --files <note paths…>
 ```
 Notes listed under `already_done` were triaged by another session: nothing to do. Paths under `refused` are not
 inbox notes (a folder, a `done/` entry, a symlink, a non-`.md` file, or a path outside `handoffs/inbox/<key>/`) and
@@ -93,7 +96,7 @@ Notes left untouched stay and appear under Warnings.
 ### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
 
 ```bash
-python3 ~/.claude/tools/session/close.py repo-handoff --cwd "$PWD"
+sh ~/.claude/tools/session/run.sh close.py repo-handoff --cwd "$PWD"
 ```
 `written: true` → the file is committed with the project's normal flow (Step 4 "and ship", or the next PR). The
 result carries `uncommitted` and `ignored`, which Warnings reports (see Step 1). Each /sync overwrites the file from
@@ -189,7 +192,7 @@ If nothing new is promote-worthy, just log nothing and move on.
 ## Step 3 — Push vault
 
 ```bash
-python3 ~/.claude/tools/session/close.py push --message "sync: <key> session <YYYY-MM-DD>" \
+sh ~/.claude/tools/session/run.sh close.py push --message "sync: <key> session <YYYY-MM-DD>" \
   --files <handoff.path> [<archive path>] <every memory / wiki file THIS session changed>
 ```
 
@@ -236,7 +239,7 @@ file unstaged and let the owning session's commit carry both.
 ### Step 3b — Refresh this session's registry entry
 
 ```bash
-python3 ~/.claude/tools/session/close.py --cwd "$PWD" session refresh
+sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session refresh
 ```
 It records the handoff version this session just wrote, so a later concurrent /sync is detected; it is local and
 never committed.

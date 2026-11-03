@@ -1,6 +1,6 @@
 # Error Handling — session tools (`open.py` / `close.py` / `lib.py`)
 
-Last updated: 2026-10-04
+Last updated: 2026-11-03
 
 ## 1. Collector never crashes the skill
 
@@ -9,6 +9,15 @@ Last updated: 2026-10-04
   output decoded as UTF-8 with `errors="replace"`.
 - Alert: the caller turns a bad rc into a check with status `unknown` and the reason in `detail`.
 - Recovery: none needed; the next run retries.
+
+### Interpreter (`run.sh`, fixed 2026-11-03, field report PR #21)
+- What broke: the skills called `python3`, which on stock Windows is the Microsoft Store stub (exits non-zero), so
+  every /preflight and /sync began with a failed call and a retry by hand.
+- Handling: every skill call goes through `sh tools/session/run.sh <tool.py> ...`, which probes `python3` then
+  `python` for 3.11+ and `exec`s the tool once with the first that works. It never re-runs a tool that failed: a
+  retry could repeat a `push`. Every code line ends in `#`, so a CRLF checkout (core.autocrlf) still runs.
+- Alert: no working interpreter: exit 127 and `run.sh: session tools need Python 3.11+ ...` on stderr.
+- Recovery: install Python 3.11+ so `python3` or `python` is on PATH.
 
 ### Checks report "unknown", not "down"
 - Handling: a check whose tool failed (curl/ss/systemctl missing, timeout, unreadable file) is `unknown`; only an

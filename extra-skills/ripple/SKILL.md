@@ -175,7 +175,7 @@ tests. Never execute partner-owned rows.
   command (e.g. `close.py note --to <key>`).
 
 - **Stamp the run** when session tools are installed:
-  `python3 ~/.claude/tools/session/close.py --cwd "$PWD" ripple-done` (Windows Git Bash: `python`). It clears `/sync`'s
+  `sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" ripple-done`. It clears `/sync`'s
   "seams changed, not rippled" warning for this session's changes.
 
 ## Works with (all optional — ripple runs standalone)

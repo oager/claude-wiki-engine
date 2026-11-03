@@ -105,7 +105,7 @@ auto-update with the repo.
   one project's handoff: Next up, Warnings, Current state, Profile, Standing notes.
 - **Clean close:** the next session can start from the handoff alone — nothing hidden in git, in running processes or
   in the inbox.
-- **Inbox:** `python3 ~/.claude/tools/session/close.py note --to <key> --from <you> --subject "..."` leaves a note the
+- **Inbox:** `sh ~/.claude/tools/session/run.sh close.py note --to <key> --from <you> --subject "..."` leaves a note the
   next `/preflight` in that project shows, on any machine that shares the vault.
 - **Shared projects:** set `"shared": true` in the project Profile and `/sync` also writes a public
   `.claude/HANDOFF.md` (leak-guarded) for collaborators.
