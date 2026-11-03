@@ -9,7 +9,7 @@ disable-model-invocation: true
 
 Update all persistent memory and status files for the current project, then push the vault so both machines stay in sync.
 
-## Step 0 — Collect
+## Step 0: Collect
 
 ```bash
 sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD"
@@ -28,7 +28,7 @@ folder) → there is no project to sync: ask which handoff key this session's wo
 `--project <key>`, or stop. Keep this `vault_sha`: it is recorded **before** this session's
 push, which is exactly what the next `/preflight` diffs from.
 
-## Step 1 — Write the handoff (the clean-close contract)
+## Step 1: Write the handoff (the clean-close contract)
 
 A clean close = the next session can start from the handoff alone, with nothing hidden in git, in running processes
 or in the inbox.
@@ -56,14 +56,14 @@ session; Open questions → Next up; Context → Standing notes. Leave the legac
 | Section | Rule |
 |---|---|
 | Next up | **Rewrite.** Max 5, ranked; item 1 = where the next session starts. From this session's work, the previous Next up and Open items. |
-| Warnings | **Rewrite LAST**, after Steps 1a–1d (trim, inbox triage, repo handoff, proposals), because their results feed it. From Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no process probe on this platform, or the probe failed; `running.reason` says which) → write `running work unchecked (<reason>)`, never `none`; likewise `git.error` → `PR state unchecked`. Untriaged notes = `inbox_notes` minus the notes Step 1b moved; any left → `N inbox notes untriaged`. From Step 1c's result: `ignored: true` → `repo handoff is gitignored (.claude/ ignored) — collaborators can't see it`; `uncommitted: true` → `repo handoff not committed`. `seams.touched` non-empty and `seams.rippled` false → `seams changed, not rippled: <first 5 files>[ +N] — run /ripple reverse` (`seams` is null unless the Profile lists `ripple.seam_paths`; `/ripple` clears it by running `close.py ripple-done`). Nothing → `none` (= clean close). `running.others_procs` → Current state as `other session's work (<focus>)`, not Warnings. While `sessions.others` is non-empty, add one Warnings line: `another session is active here — dirty files may be theirs; commit only files you changed`. |
+| Warnings | **Rewrite LAST**, after Steps 1a–1d (trim, inbox triage, repo handoff, proposals), because their results feed it. From Step 0: dirty / unpushed work, `no_pr_branches`, `ci_pending`, `running.procs`, `drift: true`, plus background tasks this session launched. `running.supported: false` (no process probe on this platform, or the probe failed; `running.reason` says which) → write `running work unchecked (<reason>)`, never `none`; likewise `git.error` → `PR state unchecked`. Untriaged notes = `inbox_notes` minus the notes Step 1b moved; any left → `N inbox notes untriaged`. From Step 1c's result: `ignored: true` → `repo handoff is gitignored (.claude/ ignored): collaborators can't see it`; `uncommitted: true` → `repo handoff not committed`. `seams.touched` non-empty and `seams.rippled` false → `seams changed, not rippled: <first 5 files>[ +N]; run /ripple reverse` (`seams` is null unless the Profile lists `ripple.seam_paths`; `/ripple` clears it by running `close.py ripple-done`). Nothing → `none` (= clean close). `running.others_procs` → Current state as `other session's work (<focus>)`, not Warnings. While `sessions.others` is non-empty, add one Warnings line: `another session is active here: dirty files may be theirs; commit only files you changed`. |
 | Current state | **Rewrite:** live / deployed state and repo state. `running.via == "cmdline"` (Windows and macOS match the project path in command lines, weaker evidence than the Linux `/proc` probe) with empty `running.procs` → add `running work: none found (command-line match)` here, not under Warnings: it does not block a clean close. |
 | Open items | Add new, remove done. |
 | Profile | Add checks this session verified (preflight's `guessed` / `unknown` candidates that proved right, real unit names, health URLs, queue files, `deploys_from_repo`). List every Profile change in the Step 5 report. |
 | Profile: ripple | **Optional.** Only for a project that keeps a `/ripple` consumer map: `"ripple": {"map": "<path, when not docs/DATA_CONSUMERS.md>", "partners": "<partner record path>", "branch": "<branch this project's services run; partner clones count against their own upstream>", "clones": {"<watermark repo>": "<local clone path>"}, "seam_paths": ["<glob>", "<clones key>:<glob>"]}`. Propose `seam_paths` from the map's producer paths (schema, endpoints, prompts, job definitions) when this session ran or discussed `/ripple`; one yes/no. Globs are Python `fnmatch`: `*` also matches `/`, and a `<label>:` prefix must be a `clones` key (check-profile reports one that isn't). |
 | Profile: managed projects | **Optional; most sessions skip this.** Only when this session started another project's Claude session (new folder + session, a terminal tab/pane running `claude`) or the user put it in charge of one: propose `"manages": [{"key": "<child key>"}]` here and `"managed_by": "<this key>"` in the child handoff's Profile (one yes/no for both; check-profile both). Child handoff missing, or the child shows `live: 0` while its session is open → say in the report that the user should run `/preflight` and `/sync` in that session (both user-only; never type them into its terminal): that registers it and creates its handoff. Remove an entry only when the user says the management ended. Nothing like that happened → ask nothing. |
 | Standing notes | Add new gotchas. Never drop one on a rewrite. |
-| Last session | Prepend `- **YYYY-MM-DD** — <what happened>`. That exact bullet form is what trim dates. |
+| Last session | Prepend `- **YYYY-MM-DD**: <what happened>`. That exact bullet form is what trim dates. |
 | Frontmatter | `updated` (UTC `YYYY-MM-DDTHH:MMZ`), `updated_by` (hostname), `repo_sha` + `vault_sha` from Step 0, `type`. |
 
 Verify the Profile still parses (must print `"profile_error": null`, and `"ripple_error": null` when the Profile has a `ripple` key):
@@ -72,7 +72,7 @@ Verify the Profile still parses (must print `"profile_error": null`, and `"rippl
 sh ~/.claude/tools/session/run.sh close.py check-profile <handoff.path>
 ```
 
-### Step 1a — Trim
+### Step 1a: Trim
 
 ```bash
 sh ~/.claude/tools/session/run.sh close.py trim <handoff.path>
@@ -81,7 +81,7 @@ sh ~/.claude/tools/session/run.sh close.py trim <handoff.path>
 Moves Last session entries older than 14 days into `<key>.archive.md` (created if needed). `over_100kb: true` means an
 undated section has grown: split it by hand, and never cut Standing notes.
 
-### Step 1b — Inbox triage
+### Step 1b: Inbox triage
 
 For every note `/preflight` listed: act on it, or turn it into a Next up item that cites the note's subject. Then
 move the triaged notes and add every path the command prints under `stage` to the Step 3 push:
@@ -94,7 +94,7 @@ inbox notes (a folder, a `done/` entry, a symlink, a non-`.md` file, or a path o
 were not moved: fix the list.
 Notes left untouched stay and appear under Warnings.
 
-### Step 1c — Shared repo handoff (only when the Profile has `"shared": true`)
+### Step 1c: Shared repo handoff (only when the Profile has `"shared": true`)
 
 ```bash
 sh ~/.claude/tools/session/run.sh close.py repo-handoff --cwd "$PWD"
@@ -108,7 +108,7 @@ it does (propose filling it in Step 1d). `written: false` with a `reason` naming
 `.claude` or `HANDOFF.md` in the repo is a symlink (possibly committed by a collaborator); nothing was written.
 Report it; never replace the link by hand. Never commit a refused file by hand.
 
-### Step 1d — User handoff proposals (`handoffs/_USER.md`)
+### Step 1d: User handoff proposals (`handoffs/_USER.md`)
 
 Propose a change only with evidence of one of:
 1. the user stated a general rule this session that names no single project;
@@ -125,12 +125,12 @@ User:     2 proposals for _USER.md (reply e.g. "1 yes, 2 no")
   2. - Standing notes: "<line>"   contradicted: <by what>
 ```
 `yes` → write it and add `_USER.md` to the Step 3 push. `_USER.md` missing: the installer creates it; if it's still
-missing, create it from `handoffs/_USER.template.md` when the user accepts the first proposal. `no` → add `- **YYYY-MM-DD** — <proposal> (<reason>)` under
+missing, create it from `handoffs/_USER.template.md` when the user accepts the first proposal. `no` → add `- **YYYY-MM-DD**: <proposal> (<reason>)` under
 `Declined`. Anything unclear → write nothing and propose again next time. Removals use the same gate; a Standing note
 is never dropped silently. If `/preflight` reported `global.user.over_max`, say so and suggest `/doc-review`; never
 trim `_USER.md` yourself.
 
-## Step 2 — Check per-project MEMORY.md
+## Step 2: Check per-project MEMORY.md
 
 Path: `<project-memory>/MEMORY.md`
 
@@ -146,7 +146,7 @@ If no: skip — don't create entries just to have something to show.
 
 Also scan existing memory files referenced in the index. If anything is now stale or wrong, update or remove it.
 
-### Step 2a — Delegate global-eligible knowledge to /wiki-ingest
+### Step 2a: Delegate global-eligible knowledge to /wiki-ingest
 
 This is the **ingest** checkpoint for the global memory wiki — but `/sync` does NOT contain the
 ingestion logic. When the durable finding qualifies for the GLOBAL wiki (per the promotion rule in `_USER.md`
@@ -161,7 +161,7 @@ page write (with guardrails), MEMORY.md index line, `Related:` footer, and the `
 
 Do NOT duplicate the ingestion steps here — `/wiki-ingest` is the source of truth.
 
-### Step 2b — Auto-memory harvest (gated, periodic)
+### Step 2b: Auto-memory harvest (gated, periodic)
 
 The native auto-memory (`<vault>/projects/<slug>/memory/`) grows automatically and is a separate
 store from the global wiki (`<vault>/memory/`). Durable cross-project lessons can get stranded there.
@@ -190,7 +190,7 @@ while. Skip silently otherwise.
 
 If nothing new is promote-worthy, just log nothing and move on.
 
-## Step 3 — Push vault
+## Step 3: Push vault
 
 ```bash
 sh ~/.claude/tools/session/run.sh close.py push --message "sync: <key> session <YYYY-MM-DD>" \
@@ -237,7 +237,7 @@ out, runs `pull --rebase --autostash`, pushes (one retry), and checks each file 
 `memory/log.md` are written by every session; if another session's new page is still untracked, leave the shared
 file unstaged and let the owning session's commit carry both.
 
-### Step 3b — Refresh this session's registry entry
+### Step 3b: Refresh this session's registry entry
 
 ```bash
 sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session refresh
@@ -245,17 +245,17 @@ sh ~/.claude/tools/session/run.sh close.py --cwd "$PWD" session refresh
 It records the handoff version this session just wrote, so a later concurrent /sync is detected; it is local and
 never committed.
 
-## Step 4 — "and ship" (only when explicitly requested)
+## Step 4: "and ship" (only when explicitly requested)
 
 When called as `/sync and ship`: after completing Steps 1–3, commit and push the current project repo. If a `ship`
 skill is installed, invoke it; otherwise commit and push the project repo yourself on a branch and open a PR, then
 stop (merge only if the user asked for it; never merge a repo that runs production or real money without
 confirmation). Report the PR URL.
 
-## Step 5 — Report
+## Step 5: Report
 
 ```
-SYNC — <key> — <local time>
+SYNC: <key>, <local time>
 Handoff:  <handoff.path> · clean close ✓ | warnings: <list>
 Profile:  <checks added/changed | unchanged>
 Vault:    pushed <sha> | nothing to commit | deferred (<reason>)

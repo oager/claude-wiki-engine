@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /*
  * Stop hook for the claude-wiki-engine.
- * ONCE per session, gently nudges a /wiki-sync review before wrapping up, so durable knowledge gets
+ * ONCE per session, after the session has edited a file, gently nudges a /wiki-sync review before
+ * wrapping up, so durable knowledge gets
  * offered for ingest. Loop-safe (honors stop_hook_active) and low-noise (a tmp flag fires it once).
  * If the session was routine, Claude is told to just say so and stop. Disable with WIKI_SYNC_NUDGE=off.
  * install.py copies this to <config>/hooks/ and registers it in settings.json (Stop).
@@ -20,6 +21,14 @@ try {
   const sid = String(seed).replace(/[^a-z0-9]/gi, '_').slice(-40) || 'default';
   const flag = `${os.tmpdir()}/.wiki_sync_nudge_${sid}`;
   if (fs.existsSync(flag)) process.exit(0);           // already nudged once this session
+  // Wait for the first file edit: the first Stop is often a read-only /preflight, and nudging there spent the
+  // one nudge before any real work. Tool calls sit in the transcript as unescaped `"name":"Edit"` keys; a
+  // mention inside a string is JSON-escaped and never matches. No readable transcript: nudge as before.
+  if (d.transcript_path) {
+    let t = null;
+    try { t = fs.readFileSync(d.transcript_path, 'utf8'); } catch (_e) {}
+    if (t !== null && !/[{,]"name":"(?:Write|Edit|MultiEdit|NotebookEdit)"/.test(t)) process.exit(0);
+  }
   try { fs.writeFileSync(flag, '1'); } catch (_e) {}
   process.stdout.write(JSON.stringify({
     decision: 'block',

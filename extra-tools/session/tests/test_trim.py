@@ -56,3 +56,14 @@ def test_trim_no_section(tmp_path):
     p = tmp_path / "k.md"
     p.write_text("## Next up\n1. x\n", encoding="utf-8")
     assert cl.trim(p)["moved"] == 0
+
+
+def test_trim_handles_old_and_new_entry_formats(tmp_path):
+    # /sync now writes `- **date**: ...` (no em dash, #21 A3); handoffs still hold the old `- **date** — ...` entries
+    p = tmp_path / "k.md"
+    p.write_text(DOC.replace("- **2026-09-27** — new entry", "- **2026-09-27**: new entry")
+                    .replace("- **2026-09-10** — old entry", "- **2026-09-10**: old entry"), encoding="utf-8")
+    r = cl.trim(p, today=dt.date(2026, 9, 27))
+    assert r["moved"] == 2
+    live = p.read_text(encoding="utf-8")
+    assert "new entry" in live and "old entry" not in live and "older entry" not in live

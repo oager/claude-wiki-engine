@@ -108,7 +108,7 @@ other clones are counted against their own upstream (`ripple.branch` is this pro
   raised false outage alarms before).
 - A port-serving process is alive when its port is (a `port` check), not when `pgrep` finds it.
 - `global.user.profile_error` set: `User profile broken: <error>` on the Health line; user checks were skipped.
-- `sessions.others` non-empty: `⚠ Also open here: N session(s) — <id> (<focus or "no focus">), …` on the Health line
+- `sessions.others` non-empty: `⚠ Also open here: N session(s): <id> (<focus or "no focus">), …` on the Health line
   (show `<id>/<pid>` when an id equals `sessions.me`: a fork may keep its parent's id; a desktop Code-tab fork gets its own).
   `sessions.unregistered` non-empty (Linux only): add `+N unregistered Claude process(es) in this folder`.
   `sessions.focus` empty AND (`sessions.others` non-empty OR the user's first request names a clear topic): take a
@@ -127,7 +127,7 @@ name, plus any major scheduled macro event in the next 48 h. If the Conventions 
 Omit a line with nothing to say, except Handoff, Health and Next up.
 
 ```
-PREFLIGHT — <key> (<type>) — <local time>
+PREFLIGHT: <key> (<type>), <local time>
 ━━━━━━━━━━━━━━━━━━━━━━
 Handoff:  <age> (<updated_by>) · clean close | N warnings | legacy, N days | none (agenda guessed)
 Warnings: <from last close>                        (only if not "none")
@@ -142,9 +142,9 @@ Market:   <one line>                               (trading only)
 Global:   <skills changed · relevant knowledge · Claude Code relaunch · plugins differing from catalog>
 Inbox:    <N notes: subjects>                      (only if any)
 User:     <user checks: quiet one line | loud items>
-⚠ Vault:  <stuck merge | pull failed | pull skipped: a /sync push was running — handoff may be one sync behind, re-run /preflight>   (only if any; the last when global.pull starts with "skipped (a /sync push" or "skipped (cannot take the vault lock")
+⚠ Vault:  <stuck merge | pull failed | pull skipped: a /sync push was running; handoff may be one sync behind, re-run /preflight>   (only if any; the last when global.pull starts with "skipped (a /sync push" or "skipped (cannot take the vault lock")
 Vault:    local only (not in git)                  (only when global.vault == "local")
-Vault:    git, no remote: not synced across machines (only when global.pull is "skipped (no remote)", "skipped (no upstream …)" or "skipped (detached HEAD)" — say which)
+Vault:    git, no remote: not synced across machines (only when global.pull is "skipped (no remote)", "skipped (no upstream …)" or "skipped (detached HEAD)"; say which)
 ━━━━━━━━━━━━━━━━━━━━━━
 Next up:  1. … 2. … 3. …
 Start on #1?
