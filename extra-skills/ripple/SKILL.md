@@ -79,9 +79,9 @@ Every propagation incident happens at a seam. Know the failure mode before you s
 | Seam | Consumers found by | Characteristic failure |
 |---|---|---|
 | HTTP/RPC endpoint | grep clients for the route | Shape change kills a UI panel SILENTLY; an HTTP-200 smoke passes a dead panel |
-| State file (JSON sidecar) | grep loaders for the filename/env var | Consumer reads stale/absent forever; nobody notices |
+| State file (JSON sidecar, or a log read as data) | grep loaders for the filename/env var; for a log, every reader that tails or parses it (status scripts, digests, prompts, portal log boxes, watchdogs). When a producer moves to journald or a new path, grep every reader of the OLD path | Consumer reads stale/absent forever; nobody notices. A frozen log reads as current: a digest posts a months-old cycle as today's, and migrating one reader (the watchdog) leaves its siblings on the dead file |
 | DB table/column | grep SQL + ORM for table/column | Semantics misread (a value's *meaning* changed, not its shape) — consumers compute confidently wrong numbers |
-| Value vocabulary / allowlist | the producer's emitted value set vs each consumer's accepted set (enums, label strings, mode numbers, allowlists) | Producer emits a value no consumer accepts (`pos` vs `positive`; mode 13 vs allowlist {0,4,12}) → every row reads as unscored, or a guard silently skips the record. Tests on the code path pass; only diffing REAL outputs both ways catches it |
+| Value vocabulary / allowlist | the producer's emitted value set vs each consumer's accepted set (enums, label strings, mode numbers, allowlists), including display and label lookup tables, not just the gate | Producer emits a value no consumer accepts (`pos` vs `positive`; mode 13 vs allowlist {0,4,12}) → every row reads as unscored, or a guard silently skips the record. The gate gets updated and a display table lags: every live row renders "unknown" for weeks. Tests on the code path pass; only diffing REAL outputs both ways catches it |
 | Re-derived metric | grep the FORMULA or filter predicate (the WHERE clause, the sign/multiplier expression), not just the table name | Several consumers compute the "same" number with their own filters/formulas; fixing one leaves the rest confidently different |
 | Prompt contract | grep prompt files for the input filename | New input with no prompt paragraph = the LLM ignores it or hallucinates a read. Reverse: input shrinks but the paragraph still describes the removed fields → the LLM fabricates them |
 | Framework state key | the state schema (TypedDict, dataclass, proto) | Undeclared key silently dropped in transit; all readers see None |
@@ -141,7 +141,8 @@ tests. Never execute partner-owned rows.
 - New LLM input → its prompt-contract paragraph exists and matches the actual fields. Input
   shrank → no paragraph still describes the removed fields.
 - Value vocabulary touched → run old and new on real data and **diff the consumer outputs both
-  ways**; a row that turns unscored/skipped is the bug.
+  ways**; a row that turns unscored/skipped is the bug. Cheap guard worth adding with the fix: a
+  test that every value the loader or gate accepts has an entry in each display/label table.
 - New framework state key → declared in the state schema, or nested under an existing key.
 - Deployed copy / live store → after deploying, diff source vs every copy and the store again.
 - Anything deployed → **real-env smoke** in the consumer's actual invocation environment (the
@@ -161,6 +162,9 @@ tests. Never execute partner-owned rows.
   memory and record its location in the personal layer.
 - **Advance the sweep watermark** for each repo you swept: the remote tip you examined, the date,
   and who swept. A repo skipped this run keeps its old mark. A repo found in the inventory → new row.
+  Advance to the SWEPT head, the tip you fetched at the start of the sweep, never to the head after this run's
+  own fix commits land: those commits are unreviewed, and the next sweep covers them. Marking past
+  them lets a sweep certify its own edits.
 - Re-date every null you re-probed; leave expired ones `unknown`.
 - Stale docs/memory: **trivial** (one wrong line) → correct inline now; **structural**
   (contradictions, duplicates, multi-page drift) → hand the file list to a doc-hygiene skill if
