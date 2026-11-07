@@ -26,6 +26,15 @@ watermark → the remote tip of `<branch>`:
   docs-only/test-only → note and skip.
 - No watermark yet? Ask the user for a window ("since when?"), default 7 days.
 
+## Large ranges: split into lanes
+
+When the window holds more than about 100 commits across repos, one serial pass loses detail.
+Split the sweep into parallel lanes by seam family, for example: authority path / advisory and
+app-level schedulers / partner repos / live host state. Each lane appends its findings (with
+file:line evidence) to one shared notes file. Then live-verify the top claims centrally before
+building the impact table: a lane's claim is a lead, not a verdict (the iron rule). One sweep run
+this way (4 lanes) produced about 25 map corrections in about an hour of wall time.
+
 ## Live-state sweep (what git can't show)
 
 - `git log origin/<branch>..HEAD` and `HEAD..origin/<branch>` on each running checkout — unpushed
@@ -48,6 +57,12 @@ watermark → the remote tip of `<branch>`:
 | Orchestrators | Airflow/Dagster/Prefect DAG dirs and their UIs |
 | Cloud | EventBridge/CloudWatch rules, Cloud Scheduler jobs, Azure Logic Apps/Functions timers |
 | App-level stores | agent job stores (`jobs.json`), dashboard alert rules, in-app schedulers |
+
+**Calendar-pinned one-shots.** A cron line with a fixed day-of-month AND a fixed month
+(`30 3 12 9 *`) was usually meant to run once, but it fires again every year. Flag each one and ask
+whether it is still wanted; a one-shot backfill that writes or signs anything is the dangerous
+kind. Same check for other families: a systemd `OnCalendar=` with a fixed month and day and no
+year, an orchestrator schedule with no end date.
 
 ## Partner kinds — how to sweep each
 
